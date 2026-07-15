@@ -1,0 +1,166 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>QueryCraft AI // CONTROL CENTER</title>
+  <link rel="stylesheet" href="/static/styles.css">
+</head>
+<body>
+  <!-- Scanline Overlay Effect -->
+  <div class="scanlines"></div>
+
+  <div class="dashboard-container">
+    <!-- Top Navigation Bar -->
+    <header class="dash-header">
+      <a href="/dashboard" class="dash-logo">Query<span>Craft</span> AI</a>
+      
+      <div class="dash-status">
+        <span class="status-dot"></span>
+        <span>NEURAL_ENGINE_V1.9 // ONLINE</span>
+      </div>
+
+      <div class="user-profile">
+        <div class="profile-info">
+          <div class="profile-name">Operator</div>
+          <div class="profile-role">Neural Operator</div>
+        </div>
+        <button id="btn-logout" class="btn-cyber btn-logout">Disconnect</button>
+      </div>
+    </header>
+
+    <!-- Main Workspace Content -->
+    <main class="dash-content">
+      
+      <!-- LEFT SIDEBAR: Database Schema -->
+      <section class="cyber-card schema-panel">
+        <div class="panel-header">
+          <span class="panel-title">Active Schema</span>
+          <select id="schema-selector" class="schema-select">
+            <option value="" disabled selected>Loading databases...</option>
+          </select>
+        </div>
+
+        <div class="schema-scroll" id="schema-tree-container">
+          <!-- Schema tree generated dynamically by app.js -->
+        </div>
+
+        <!-- Custom Schema Creator Tool -->
+        <div class="panel-footer-creator">
+          <button id="btn-toggle-creator" class="btn-cyber btn-small creator-toggle">
+            + Create Custom Table
+          </button>
+          
+          <div id="schema-creator-form" class="schema-creator-form">
+            <input type="text" id="new-table-name" class="creator-input" placeholder="Table Name (e.g. orders)">
+            <input type="text" id="new-table-columns" class="creator-input" placeholder="Columns (comma separated: id, name, price)">
+            <div class="creator-buttons">
+              <button id="btn-save-schema" class="btn-cyber btn-small success">Build Table</button>
+              <button id="btn-cancel-schema" class="btn-cyber btn-small pink">Cancel</button>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- CENTER WORKSPACE: Input & SQL Generator -->
+      <section class="workspace-panel">
+        
+        <!-- Input Panel -->
+        <div class="cyber-card input-workspace">
+          <div class="panel-header">
+            <span class="panel-title">1. Describe Query in English</span>
+            <span class="panel-title" style="font-size:10px; color:var(--text-muted);">Insert table/column names by clicking them in the sidebar</span>
+          </div>
+
+          <!-- Quick Templates Bar -->
+          <div class="quick-templates-bar" id="templates-bar">
+            <!-- Templates generated dynamically by app.js -->
+          </div>
+
+          <!-- English Description Input -->
+          <textarea id="english-input" class="textarea-cyber" placeholder="Type query in plain English... (e.g., 'Find all users who subscribed to premium and order by signup date')"></textarea>
+
+          <div class="workspace-actions">
+            <button id="btn-translate" class="btn-cyber" style="flex: 1;">Translate to SQL Command</button>
+            <button id="btn-clear-input" class="btn-cyber pink" style="padding: 12px 18px;">Clear</button>
+          </div>
+        </div>
+
+        <!-- Output Panel -->
+        <div class="cyber-card sql-output-workspace">
+          <div class="panel-header" style="border-color: var(--border-pink);">
+            <span class="panel-title" style="color: var(--neon-pink);">2. Generated SQL Command</span>
+            <div style="display: flex; gap: 10px;">
+              <button id="btn-copy-sql" class="btn-cyber btn-small" title="Copy SQL Code">
+                <svg class="icon-svg" viewBox="0 0 24 24" width="12" height="12" fill="currentColor">
+                  <path d="M16 1H4c-1.1 0-2 .9-2 2v14h2V3h12V1zm3 4H8c-1.1 0-2 .9-2 2v14c0 1.1 0 2 .9 2 2h11c1.1 0 2-.9 2-2V7c0-1.1-.9-2-2-2zm0 16H8V7h11v14z"/>
+                </svg>
+                Copy
+              </button>
+              <button id="btn-run-sql" class="btn-cyber btn-small success" title="Execute SQL against Simulated DB">
+                <svg class="icon-svg" viewBox="0 0 24 24" width="12" height="12" fill="currentColor">
+                  <path d="M8 5v14l11-7z"/>
+                </svg>
+                Execute
+              </button>
+            </div>
+          </div>
+
+          <!-- SQL Terminal block -->
+          <div class="terminal-output" id="sql-terminal">
+            <div class="terminal-line cmd">sql_engine --interpreter_active</div>
+            <div class="terminal-line">Waiting for English compilation inputs...<span class="terminal-cursor"></span></div>
+          </div>
+        </div>
+
+      </section>
+
+      <!-- RIGHT SIDEBAR: Simulated Database & History -->
+      <section class="simulator-panel">
+        
+        <!-- Live Table Preview -->
+        <div class="cyber-card db-preview-card">
+          <div class="panel-header" style="border-color: var(--border-purple);">
+            <span class="panel-title" style="color: var(--neon-purple);">Simulated SQL Execution Output</span>
+            <div style="display: flex; gap: 10px; align-items: center;">
+              <span id="active-table-badge" class="panel-title" style="font-size:10px; color:var(--neon-green); text-transform:uppercase;"></span>
+              <button id="btn-clear-grid" class="btn-cyber btn-small pink" style="font-size: 10px; padding: 3px 8px;" title="Clear Output Grid">Clear Grid</button>
+            </div>
+          </div>
+
+          <div class="table-scroll-container" id="db-table-preview">
+            <div class="simulator-empty">
+              <svg class="icon-svg" viewBox="0 0 24 24" width="32" height="32" fill="currentColor" style="opacity: 0.3;">
+                <path d="M12 2C6.48 2 2 4.02 2 6.5v11c0 2.48 4.48 4.5 10 4.5s10-2.02 10-4.5v-11C22 4.02 17.52 2 12 2zm0 3c4.13 0 7.5 1.25 7.5 2.5S16.13 10 12 10s-7.5-1.25-7.5-2.5S7.87 5 12 5zm0 14c-4.13 0-7.5-1.25-7.5-2.5V14c1.61 1.2 4.39 2 7.5 2s5.89-.8 7.5-2v2.5c0 1.25-3.37 2.5-7.5 2.5zm0-4.5c-4.13 0-7.5-1.25-7.5-2.5V9.5c1.61 1.2 4.39 2 7.5 2s5.89-.8 7.5-2v2.5c0 1.25-3.37 2.5-7.5 2.5z"/>
+              </svg>
+              <span>RUN SQL QUERY TO GENERATE OUTPUT RECORDS</span>
+            </div>
+          </div>
+          
+          <!-- Virtual Terminal Console Status -->
+          <div style="background:#020203; border-top:1px solid rgba(255,255,255,0.05); padding:10px 15px; font-family:var(--font-mono); font-size:10px; height: 95px; overflow-y: auto;" id="console-logs">
+            <div style="color:var(--text-muted);">[SYS] Initializing SQLite server...</div>
+            <div style="color:var(--neon-cyan);">[DB] Seeded E-Commerce, SaaS, and Social Network databases locally.</div>
+          </div>
+        </div>
+
+        <!-- History Card -->
+        <div class="cyber-card history-card">
+          <div class="panel-header">
+            <span class="panel-title">Translation Log</span>
+            <button id="btn-clear-history" class="btn-clear-history">Clear logs</button>
+          </div>
+          <div class="history-list" id="history-container">
+            <!-- History items generated dynamically by app.js -->
+          </div>
+        </div>
+
+      </section>
+
+    </main>
+  </div>
+
+  <script src="/static/auth.js"></script>
+  <script src="/static/app.js"></script>
+</body>
+</html>

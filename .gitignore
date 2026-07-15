@@ -1,0 +1,19 @@
+# Virtual Environment
+venv/
+.venv/
+env/
+__pycache__/
+*.pyc
+
+# Local Databases
+*.db
+databases/
+
+# Environment configurations and keys
+.env
+
+# IDE / System files
+.vscode/
+.idea/
+.gemini/
+.DS_Store
