@@ -126,14 +126,6 @@ def signup():
     if not username or not email or not password:
         return jsonify({'success': False, 'message': 'Missing user parameters.'}), 400
 
-    # A. Write to MySQL (Primary)
-    mysql_success = False
-    if MYSQL_AVAILABLE:
-        try:
-            conn = get_mysql_connection('history')
-            with conn.cursor() as cursor:
-                cursor.execute("INSERT INTO users (username, email, password) VALUES (%s, %s, %s)", 
-                               (username, email, password))
     # Write to MySQL
     if MYSQL_AVAILABLE:
         try:
