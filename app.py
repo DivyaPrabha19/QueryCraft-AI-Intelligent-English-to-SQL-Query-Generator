@@ -1,5 +1,4 @@
 import os
-import sqlite3
 import re
 import urllib.request
 import json
@@ -31,26 +30,6 @@ load_env()
 app = Flask(__name__, template_folder='templates', static_folder='static')
 app.secret_key = 'cyberpunk_neural_key_1984'
 
-# Paths for SQLite databases
-DB_DIR = os.path.join(os.path.dirname(__file__), 'databases')
-os.makedirs(DB_DIR, exist_ok=True)
-
-USER_DB = os.path.join(DB_DIR, 'users.db')
-HISTORY_DB = os.path.join(DB_DIR, 'history.db')
-ECOMMERCE_DB = os.path.join(DB_DIR, 'ecommerce.db')
-SAAS_DB = os.path.join(DB_DIR, 'saas.db')
-SOCIAL_DB = os.path.join(DB_DIR, 'social.db')
-CUSTOM_DB = os.path.join(DB_DIR, 'custom.db')
-
-def get_db_path(schema_name):
-    if schema_name == 'ecommerce':
-        return ECOMMERCE_DB
-    elif schema_name == 'saas':
-        return SAAS_DB
-    elif schema_name == 'social':
-        return SOCIAL_DB
-    return CUSTOM_DB
-
 def get_mysql_connection(db_name=None):
     if not MYSQL_AVAILABLE:
         raise Exception("MySQL client library (pymysql) is not available.")
@@ -69,49 +48,7 @@ def get_mysql_connection(db_name=None):
 # 1. DATABASE INITIALIZATION & SEEDING
 # ==========================================
 def init_databases():
-    # A. Users authentication database (SQLite Fallback)
-    try:
-        conn = sqlite3.connect(USER_DB)
-        cursor = conn.cursor()
-        cursor.execute('''
-            CREATE TABLE IF NOT EXISTS users (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                username TEXT NOT NULL,
-                email TEXT UNIQUE NOT NULL,
-                password TEXT NOT NULL
-            )
-        ''')
-        # Seed default user if not exists
-        cursor.execute("SELECT * FROM users WHERE email='neo@matrix.com'")
-        if not cursor.fetchone():
-            cursor.execute("INSERT INTO users (username, email, password) VALUES (?, ?, ?)", 
-                           ('Neo', 'neo@matrix.com', 'password123'))
-        conn.commit()
-        conn.close()
-    except Exception as e:
-        print(f"SQLite users init error: {e}")
-
-    # B. History database (SQLite Fallback)
-    try:
-        conn_hist = sqlite3.connect(HISTORY_DB)
-        cursor_hist = conn_hist.cursor()
-        cursor_hist.execute('''
-            CREATE TABLE IF NOT EXISTS query_history (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                user_email TEXT NOT NULL,
-                english_query TEXT NOT NULL,
-                sql_query TEXT NOT NULL,
-                schema_name TEXT NOT NULL,
-                engine TEXT NOT NULL,
-                timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
-            )
-        ''')
-        conn_hist.commit()
-        conn_hist.close()
-    except Exception as e:
-        print(f"SQLite history init error: {e}")
-
-    # C. MySQL authentication & history tables (Primary SQL Database)
+    # MySQL authentication & history tables (Primary SQL Database)
     if MYSQL_AVAILABLE:
         try:
             # First, connect to MySQL without selecting a database and create 'history' database
@@ -197,33 +134,25 @@ def signup():
             with conn.cursor() as cursor:
                 cursor.execute("INSERT INTO users (username, email, password) VALUES (%s, %s, %s)", 
                                (username, email, password))
+    # Write to MySQL
+    if MYSQL_AVAILABLE:
+        try:
+            conn = get_mysql_connection('history')
+            with conn.cursor() as cursor:
+                cursor.execute("INSERT INTO users (username, email, password) VALUES (%s, %s, %s)", 
+                               (username, email, password))
             conn.commit()
             conn.close()
-            mysql_success = True
+            session['username'] = username
+            session['email'] = email
+            return jsonify({'success': True, 'username': username})
         except Exception as e:
             err_str = str(e)
             if '1062' in err_str or 'Duplicate' in err_str:
                 return jsonify({'success': False, 'message': 'Email already registered.'}), 409
-            print(f"MySQL signup warning: {e}")
-
-    # B. Write to SQLite (Fallback/Sync)
-    try:
-        conn = sqlite3.connect(USER_DB)
-        cursor = conn.cursor()
-        cursor.execute("INSERT INTO users (username, email, password) VALUES (?, ?, ?)", 
-                       (username, email, password))
-        conn.commit()
-        conn.close()
-    except sqlite3.IntegrityError:
-        return jsonify({'success': False, 'message': 'Email already registered.'}), 409
-    except Exception as e:
-        if not mysql_success:
-            return jsonify({'success': False, 'message': str(e)}), 500
-        print(f"SQLite signup warning: {e}")
-        
-    session['username'] = username
-    session['email'] = email
-    return jsonify({'success': True, 'username': username})
+            return jsonify({'success': False, 'message': f"Database registration error: {str(e)}"}), 500
+    else:
+        return jsonify({'success': False, 'message': 'Database service unavailable.'}), 503
 
 @app.route('/api/auth/signin', methods=['POST'])
 def signin():
@@ -235,7 +164,6 @@ def signin():
         return jsonify({'success': False, 'message': 'Missing credentials.'}), 400
 
     user = None
-    # A. Try MySQL
     if MYSQL_AVAILABLE:
         try:
             conn = get_mysql_connection('history')
@@ -244,20 +172,9 @@ def signin():
                 user = cursor.fetchone()
             conn.close()
         except Exception as e:
-            print(f"MySQL signin error: {e}")
-
-    # B. Try SQLite Fallback
-    if not user:
-        try:
-            conn = sqlite3.connect(USER_DB)
-            cursor = conn.cursor()
-            cursor.execute("SELECT username, email FROM users WHERE email=? AND password=?", (email, password))
-            row = cursor.fetchone()
-            if row:
-                user = {'username': row[0], 'email': row[1]}
-            conn.close()
-        except Exception as e:
-            print(f"SQLite signin error: {e}")
+            return jsonify({'success': False, 'message': f"Database connection error: {str(e)}"}), 500
+    else:
+        return jsonify({'success': False, 'message': 'Database service unavailable.'}), 503
 
     if user:
         session['username'] = user['username']
@@ -304,7 +221,7 @@ def google_auth():
         return jsonify({'success': False, 'message': 'Google token did not contain email.'}), 400
 
     user = None
-    # A. Try MySQL
+    # Try MySQL
     if MYSQL_AVAILABLE:
         try:
             conn = get_mysql_connection('history')
@@ -320,27 +237,9 @@ def google_auth():
                     user = {'username': name, 'email': email}
             conn.close()
         except Exception as e:
-            print(f"MySQL google_auth error: {e}")
-
-    # B. Try SQLite Sync/Fallback
-    try:
-        conn = sqlite3.connect(USER_DB)
-        cursor = conn.cursor()
-        cursor.execute("SELECT username, email FROM users WHERE email=?", (email,))
-        sqlite_user = cursor.fetchone()
-        if not sqlite_user:
-            random_password = secrets.token_hex(16)
-            cursor.execute("INSERT INTO users (username, email, password) VALUES (?, ?, ?)", 
-                           (name, email, random_password))
-            conn.commit()
-            if not user:
-                user = {'username': name, 'email': email}
-        else:
-            if not user:
-                user = {'username': sqlite_user[0], 'email': sqlite_user[1]}
-        conn.close()
-    except Exception as e:
-        print(f"SQLite google_auth error: {e}")
+            return jsonify({'success': False, 'message': f"Google auth database error: {str(e)}"}), 500
+    else:
+        return jsonify({'success': False, 'message': 'Database service unavailable.'}), 503
 
     if user:
         session['username'] = user['username']
@@ -489,7 +388,6 @@ def get_user_history():
         return jsonify([])
         
     rows = []
-    # A. Try MySQL
     if MYSQL_AVAILABLE:
         try:
             conn = get_mysql_connection('history')
@@ -502,30 +400,6 @@ def get_user_history():
             conn.close()
         except Exception as e:
             print(f"MySQL get_user_history error: {e}")
-
-    # B. Try SQLite Fallback
-    if not rows:
-        try:
-            conn = sqlite3.connect(HISTORY_DB)
-            conn.row_factory = sqlite3.Row
-            cursor = conn.cursor()
-            cursor.execute(
-                "SELECT english_query, sql_query, schema_name, engine, timestamp FROM query_history WHERE user_email = ? ORDER BY id DESC LIMIT 10",
-                (session['email'],)
-            )
-            sqlite_rows = cursor.fetchall()
-            rows = []
-            for r in sqlite_rows:
-                rows.append({
-                    'english_query': r['english_query'],
-                    'sql_query': r['sql_query'],
-                    'schema_name': r['schema_name'],
-                    'engine': r['engine'],
-                    'timestamp': r['timestamp']
-                })
-            conn.close()
-        except Exception as e:
-            print(f"SQLite get_user_history error: {e}")
 
     history = []
     for row in rows:
@@ -553,7 +427,7 @@ def save_query_history():
     if not english or not sql:
         return jsonify({'success': False, 'message': 'Missing query data.'}), 400
         
-    # A. Write to MySQL (Primary)
+    # Write to MySQL
     if MYSQL_AVAILABLE:
         try:
             conn = get_mysql_connection('history')
@@ -568,27 +442,11 @@ def save_query_history():
                 )
             conn.commit()
             conn.close()
+            return jsonify({'success': True})
         except Exception as e:
-            print(f"MySQL save_query_history error: {e}")
-            
-    # B. Write to SQLite (Fallback/Sync)
-    try:
-        conn = sqlite3.connect(HISTORY_DB)
-        cursor = conn.cursor()
-        cursor.execute(
-            "DELETE FROM query_history WHERE user_email = ? AND LOWER(english_query) = LOWER(?)",
-            (session['email'], english)
-        )
-        cursor.execute(
-            "INSERT INTO query_history (user_email, english_query, sql_query, schema_name, engine) VALUES (?, ?, ?, ?, ?)",
-            (session['email'], english, sql, schema_name, engine)
-        )
-        conn.commit()
-        conn.close()
-    except Exception as e:
-        print(f"SQLite save_query_history error: {e}")
-
-    return jsonify({'success': True})
+            return jsonify({'success': False, 'message': f"Database save error: {str(e)}"}), 500
+    else:
+        return jsonify({'success': False, 'message': 'Database service unavailable.'}), 503
 
 # API to clear user's query history from database
 @app.route('/api/history/clear', methods=['POST'])
@@ -604,21 +462,11 @@ def clear_query_history():
                 cursor.execute("DELETE FROM query_history WHERE user_email = %s", (session['email'],))
             conn.commit()
             conn.close()
+            return jsonify({'success': True})
         except Exception as e:
-            print(f"MySQL clear_query_history error: {e}")
-            
-    # Clear in SQLite
-    try:
-        conn = sqlite3.connect(HISTORY_DB)
-        cursor = conn.cursor()
-        cursor.execute("DELETE FROM query_history WHERE user_email = ?", (session['email'],))
-        conn.commit()
-        conn.close()
-    except Exception as e:
-        print(f"SQLite clear_query_history error: {e}")
-        return jsonify({'success': False, 'message': str(e)}), 500
-
-    return jsonify({'success': True})
+            return jsonify({'success': False, 'message': f"Database clear error: {str(e)}"}), 500
+    else:
+        return jsonify({'success': False, 'message': 'Database service unavailable.'}), 503
 
 # Translation API supporting Gemini AI and Rule-Based fallback
 @app.route('/api/translate', methods=['POST'])
@@ -705,30 +553,37 @@ def create_custom_schema():
     for col in columns_list:
         clean_col = re.sub(r'[^a-z0-9_]', '', col.strip().lower())
         if clean_col and clean_col != 'id':
-            sanitized_cols.append(f"{clean_col} TEXT")
+            sanitized_cols.append(f"{clean_col} VARCHAR(255)")
 
     if not sanitized_cols:
          return jsonify({'success': False, 'message': 'Columns must contain valid names.'}), 400
 
-    # Build SQL definition
-    sql_create = f"CREATE TABLE IF NOT EXISTS {table_name} (id INTEGER PRIMARY KEY AUTOINCREMENT, {', '.join(sanitized_cols)});"
+    # Build SQL definition for MySQL
+    sql_create = f"CREATE TABLE IF NOT EXISTS {table_name} (id INT AUTO_INCREMENT PRIMARY KEY, {', '.join(sanitized_cols)});"
     
     try:
-        conn = sqlite3.connect(CUSTOM_DB)
-        cursor = conn.cursor()
-        cursor.execute(sql_create)
-        
-        # Seed 2 mock rows automatically for the user to query
-        dummy_row_fields = [c.split(' ')[0] for c in sanitized_cols]
-        fields_placeholders = ', '.join(['?'] * len(dummy_row_fields))
-        fields_csv = ', '.join(dummy_row_fields)
-        
-        seed_vals_1 = [f"val_{f}_1" for f in dummy_row_fields]
-        seed_vals_2 = [f"val_{f}_2" for f in dummy_row_fields]
-        
-        cursor.execute(f"INSERT INTO {table_name} ({fields_csv}) VALUES ({fields_placeholders})", seed_vals_1)
-        cursor.execute(f"INSERT INTO {table_name} ({fields_csv}) VALUES ({fields_placeholders})", seed_vals_2)
-        
+        # Create 'custom' database in MySQL if not exists
+        conn_root = get_mysql_connection()
+        with conn_root.cursor() as cursor_root:
+            cursor_root.execute("CREATE DATABASE IF NOT EXISTS custom")
+        conn_root.commit()
+        conn_root.close()
+
+        # Connect to 'custom' database in MySQL
+        conn = get_mysql_connection('custom')
+        with conn.cursor() as cursor:
+            cursor.execute(sql_create)
+            
+            # Seed 2 mock rows automatically for the user to query
+            dummy_row_fields = [c.split(' ')[0] for c in sanitized_cols]
+            fields_placeholders = ', '.join(['%s'] * len(dummy_row_fields))
+            fields_csv = ', '.join(dummy_row_fields)
+            
+            seed_vals_1 = [f"val_{f}_1" for f in dummy_row_fields]
+            seed_vals_2 = [f"val_{f}_2" for f in dummy_row_fields]
+            
+            cursor.execute(f"INSERT INTO {table_name} ({fields_csv}) VALUES ({fields_placeholders})", seed_vals_1)
+            cursor.execute(f"INSERT INTO {table_name} ({fields_csv}) VALUES ({fields_placeholders})", seed_vals_2)
         conn.commit()
         conn.close()
         return jsonify({'success': True, 'message': f'Table "{table_name}" created and preseeded in Custom DB.'})
@@ -918,7 +773,7 @@ def translate_english_to_sql_python(english, schema_name):
                     # Check if column is text (needs quotes in SQL)
                     is_numeric = False
                     if schema_name in ['ecommerce', 'saas', 'social'] and t in schema_cols:
-                        # SQLite returns TEXT, INTEGER, REAL. Let's quote strings
+                        # MySQL types. Let's quote strings
                         is_numeric = col in ['id', 'price', 'stock', 'user_id', 'order_id', 'product_id', 'quantity', 'age', 'likes_count', 'follower_id', 'followed_id', 'duration_sec', 'salary']
                     
                     if is_numeric:

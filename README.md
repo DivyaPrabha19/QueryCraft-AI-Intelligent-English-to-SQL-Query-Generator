@@ -1,6 +1,6 @@
 # QueryCraft AI — Intelligent English-to-SQL Query Generator
 
-QueryCraft AI is an advanced, full-stack database interface and neural translation engine designed with a retro-futuristic, cyberpunk dark neon theme. It translates plain English instructions into clean, executable SQL syntax, inspects active database schemas, tracks translation histories inside a centralized MySQL server (with automatic SQLite fallback), and lets you run commands live.
+QueryCraft AI is an advanced, full-stack database interface and neural translation engine designed with a retro-futuristic, cyberpunk dark neon theme. It translates plain English instructions into clean, executable SQL syntax, inspects active database schemas, tracks translation histories inside a centralized MySQL server, and lets you run commands live.
 
 ---
 
@@ -8,7 +8,6 @@ QueryCraft AI is an advanced, full-stack database interface and neural translati
 
 *   **🧠 Neural Compiler**: Seamless translation powered by **Google Gemini AI (2.5-Flash)**, with a rule-based Python parsing engine as a local fallback.
 *   **💾 CENTRALIZED DATABASE HISTORY**: centralizes user accounts and translation logs inside a dedicated MySQL `history` database, automatically created and seeded on startup.
-*   **🛡️ MULTI-DATABASE FAILOVER SYNC**: Integrates a robust failover architecture. If the primary MySQL database goes offline, operations automatically fallback to local SQLite files (`users.db` and `history.db`) to guarantee 100% uptime.
 *   **🔍 DYNAMIC SCHEMA DISCOVERY**: Automatically discovers all available database schemas (e.g. `farmers_easeuse`, `sakila`, `world`, etc.) on your MySQL server and populates an interactive schema explorer.
 *   **💻 INTEGRATED SQL COMPILER TERMINAL**: Display syntax-highlighted SQL queries, and execute them directly against selected databases with results rendered in a modern data preview grid.
 *   **🌐 GOOGLE OAUTH SIMULATION**: Complete Google Sign-In and registration flow with support for simulated mock credentials for rapid localized testing.
@@ -18,7 +17,7 @@ QueryCraft AI is an advanced, full-stack database interface and neural translati
 ## 🛠️ Technology Stack
 
 *   **Frontend**: HTML5, Vanilla CSS3 (Custom Glassmorphism and Neon theme variables), JavaScript (ES6+ AJAX flow)
-*   **Backend**: Python, Flask, PyMySQL, SQLite3
+*   **Backend**: Python, Flask, PyMySQL
 *   **AI Integration**: Google Generative Language API
 *   **Configuration**: Dotenv configuration loading
 

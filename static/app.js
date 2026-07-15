@@ -1,8 +1,8 @@
 /**
- * static/app.js - Dashboard Workspace Orchestrator & SQLite Compiler Bridge
+ * static/app.js - Dashboard Workspace Orchestrator & MySQL Compiler Bridge
  */
 
-// Local Cache of Schemas (loaded dynamically from server SQLite databases)
+// Local Cache of Schemas (loaded dynamically from server MySQL databases)
 let dbSchemas = {};
 
 // Hardcoded Templates for quick-fill selections
@@ -530,7 +530,7 @@ document.addEventListener('DOMContentLoaded', () => {
             } else {
               lines = [
                 `[0.08s] DECONSTRUCTING STATEMENT GRAMMAR (REGEX PYTHON)...`,
-                `[0.18s] ALIGNING RELATIONS IN SQLITE SCHEMA [${activeSchema.toUpperCase()}]...`,
+                `[0.18s] ALIGNING RELATIONS IN MYSQL SCHEMA [${activeSchema.toUpperCase()}]...`,
                 `[0.32s] MAP-BUILDING JOIN CHANNELS...`,
                 `[0.45s] CONVERTING CONSTRAINTS AND WHERE ARGUMENTS...`,
                 `[0.55s] PACKING COMPILED SQL SYNTAX BLOCKS...`,
@@ -640,7 +640,7 @@ document.addEventListener('DOMContentLoaded', () => {
     });
   }
 
-  // RUN SQL BUTTON (Executes query against SQLite backend database)
+  // RUN SQL BUTTON (Executes query against MySQL backend database)
   const btnRunSql = document.getElementById('btn-run-sql');
   if (btnRunSql) {
     btnRunSql.addEventListener('click', () => {
