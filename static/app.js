@@ -440,10 +440,6 @@ function checkEngineStatus() {
         printConsoleLog('[SYS] Neural Engine: Gemini AI Connected (gemini-2.5-flash) // Status: ACTIVE', 'var(--neon-cyan)');
         const statusSpan = document.querySelector('.dash-status span:last-child');
         if (statusSpan) statusSpan.textContent = 'GEMINI_NEURAL_ENGINE // ONLINE';
-      } else if (data.active_engine === 'OpenAI GPT') {
-        printConsoleLog('[SYS] Neural Engine: OpenAI GPT Connected (gpt-4o-mini) // Status: ACTIVE', 'var(--neon-cyan)');
-        const statusSpan = document.querySelector('.dash-status span:last-child');
-        if (statusSpan) statusSpan.textContent = 'OPENAI_NEURAL_ENGINE // ONLINE';
       } else {
         printConsoleLog('[WARN] Neural Engine: API Key not found. Mode: RULE_BASED_PARSER', 'var(--neon-pink)');
         printConsoleLog('[INFO] Configure GEMINI_API_KEY in .env file to activate Neural LLM mode.', 'var(--text-muted)');

@@ -467,64 +467,18 @@ SQL Query:"""
     except Exception as e:
         raise Exception(f"Gemini API Error: {str(e)}")
 
-# Translate English to SQL using OpenAI API endpoint
-def translate_with_openai(english, schema_name, api_key):
-    schema_context = get_schema_context(schema_name)
-    system_prompt = os.environ.get('SYSTEM_PROMPT', 'You are a precise English-to-SQL translator for a SQLite database. Given the database schema, translate the English query into a single valid SQLite query. Return ONLY the raw SQL code. Do not include markdown code blocks, backticks, or any conversational text.').strip()
-    system_prompt = system_prompt.replace('SQLite', 'MySQL').replace('sqlite', 'mysql')
-    
-    user_prompt = f"""Database Schema:
-{schema_context}
-
-English Request: "{english}"
-
-SQL Query:"""
-
-    url = "https://api.openai.com/v1/chat/completions"
-    data = {
-        "model": "gpt-4o-mini",
-        "messages": [
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": user_prompt}
-        ],
-        "temperature": 0.1,
-        "max_tokens": 250
-    }
-    
-    req = urllib.request.Request(
-        url,
-        data=json.dumps(data).encode('utf-8'),
-        headers={
-            'Content-Type': 'application/json',
-            'Authorization': f'Bearer {api_key}'
-        },
-        method='POST'
-    )
-    
-    try:
-        with urllib.request.urlopen(req, timeout=12) as response:
-            res_data = json.loads(response.read().decode('utf-8'))
-            text = res_data['choices'][0]['message']['content']
-            return text.strip()
-    except Exception as e:
-        raise Exception(f"OpenAI API Error: {str(e)}")
-
 # Get current neural engine config status
 @app.route('/api/status/engine', methods=['GET'])
 def get_engine_status():
     load_env()
     gemini_key = os.environ.get('GEMINI_API_KEY')
-    openai_key = os.environ.get('OPENAI_API_KEY')
     
     active_engine = "Rule-Based Parser"
     if gemini_key:
         active_engine = "Gemini AI"
-    elif openai_key:
-        active_engine = "OpenAI GPT"
         
     return jsonify({
         'gemini_connected': bool(gemini_key),
-        'openai_connected': bool(openai_key),
         'active_engine': active_engine
     })
 
@@ -666,7 +620,7 @@ def clear_query_history():
 
     return jsonify({'success': True})
 
-# Translation API supporting Gemini AI, OpenAI, and Rule-Based fallback
+# Translation API supporting Gemini AI and Rule-Based fallback
 @app.route('/api/translate', methods=['POST'])
 def translate_query():
     load_env()
@@ -678,7 +632,6 @@ def translate_query():
         return jsonify({'success': False, 'message': 'Missing english query string.'}), 400
 
     gemini_key = os.environ.get('GEMINI_API_KEY')
-    openai_key = os.environ.get('OPENAI_API_KEY')
 
     if gemini_key:
         try:
@@ -692,18 +645,6 @@ def translate_query():
             })
         except Exception as e:
             return jsonify({'success': False, 'message': f'Gemini translation error: {str(e)}'}), 500
-    elif openai_key:
-        try:
-            raw_text = translate_with_openai(english, schema_name, openai_key)
-            sql_query, simulated_output = split_sql_and_output(raw_text)
-            return jsonify({
-                'success': True, 
-                'sql': sql_query, 
-                'simulated_output': simulated_output, 
-                'engine': 'OpenAI GPT'
-            })
-        except Exception as e:
-            return jsonify({'success': False, 'message': f'OpenAI translation error: {str(e)}'}), 500
     else:
         # Fallback to rule-based parser
         sql_query = translate_english_to_sql_python(english, schema_name)

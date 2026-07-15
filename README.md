@@ -6,7 +6,7 @@ QueryCraft AI is an advanced, full-stack database interface and neural translati
 
 ## 🚀 Key Features
 
-*   **🧠 Dual Neural Compilers**: Seamless translation powered by **Google Gemini AI (2.5-Flash)** and **OpenAI GPT** models, with a rule-based Python parsing engine as a local fallback.
+*   **🧠 Neural Compiler**: Seamless translation powered by **Google Gemini AI (2.5-Flash)**, with a rule-based Python parsing engine as a local fallback.
 *   **💾 CENTRALIZED DATABASE HISTORY**: centralizes user accounts and translation logs inside a dedicated MySQL `history` database, automatically created and seeded on startup.
 *   **🛡️ MULTI-DATABASE FAILOVER SYNC**: Integrates a robust failover architecture. If the primary MySQL database goes offline, operations automatically fallback to local SQLite files (`users.db` and `history.db`) to guarantee 100% uptime.
 *   **🔍 DYNAMIC SCHEMA DISCOVERY**: Automatically discovers all available database schemas (e.g. `farmers_easeuse`, `sakila`, `world`, etc.) on your MySQL server and populates an interactive schema explorer.
@@ -19,7 +19,7 @@ QueryCraft AI is an advanced, full-stack database interface and neural translati
 
 *   **Frontend**: HTML5, Vanilla CSS3 (Custom Glassmorphism and Neon theme variables), JavaScript (ES6+ AJAX flow)
 *   **Backend**: Python, Flask, PyMySQL, SQLite3
-*   **AI Integration**: Google Generative Language API, OpenAI API
+*   **AI Integration**: Google Generative Language API
 *   **Configuration**: Dotenv configuration loading
 
 ---
@@ -81,7 +81,6 @@ MYSQL_DB=db
 
 # AI Engine Keys
 GEMINI_API_KEY=your_gemini_api_key
-OPENAI_API_KEY=your_openai_api_key
 
 # Google OAuth Client
 GOOGLE_CLIENT_ID=your_google_client_id
