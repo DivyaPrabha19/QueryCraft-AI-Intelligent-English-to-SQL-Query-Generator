@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>QueryCraft AI // CONTROL CENTER</title>
-  <link rel="stylesheet" href="/static/styles.css">
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/styles.css') }}">
 </head>
 <body>
   <!-- Scanline Overlay Effect -->
@@ -160,7 +160,8 @@
     </main>
   </div>
 
-  <script src="/static/auth.js"></script>
-  <script src="/static/app.js"></script>
+  <script src="{{ url_for('static', filename='js/config.js') }}"></script>
+<script src="{{ url_for('static', filename='js/auth.js') }}"></script>
+<script src="{{ url_for('static', filename='js/app.js') }}"></script>
 </body>
 </html>

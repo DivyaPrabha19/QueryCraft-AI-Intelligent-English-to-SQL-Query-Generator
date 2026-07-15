@@ -34,11 +34,11 @@ function showNotification(message, type = 'info') {
 
 // Router guards checking Flask session state
 const pathname = window.location.pathname;
-const isAuthPage = pathname === '/' || pathname.startsWith('/login') || pathname.endsWith('index.html');
-const isDashboardPage = pathname.startsWith('/dashboard') || pathname.endsWith('dashboard.html');
+const isAuthPage = pathname === '/' || pathname.endsWith('index.html') || pathname.includes('index') || pathname === '';
+const isDashboardPage = pathname.endsWith('dashboard.html') || pathname.includes('dashboard');
 
 function checkAuth() {
-  fetch('/api/auth/me')
+  fetch(`${API_URL}/api/auth/me`, { credentials: 'include' })
     .then(res => res.json())
     .then(data => {
       if (data.authenticated) {
@@ -47,7 +47,7 @@ function checkAuth() {
         
         // If on Auth page, redirect to dashboard
         if (isAuthPage) {
-          window.location.href = '/dashboard';
+          window.location.href = 'dashboard.html';
         } else {
           // If on dashboard, update username displays
           updateUserProfileUI(data.username);
@@ -55,13 +55,13 @@ function checkAuth() {
       } else {
         localStorage.removeItem('currentUser');
         if (isDashboardPage) {
-          window.location.href = '/';
+          window.location.href = 'index.html';
         }
       }
     })
     .catch(() => {
       if (isDashboardPage) {
-        window.location.href = '/';
+        window.location.href = 'index.html';
       }
     });
 }
@@ -93,17 +93,18 @@ function handleSignUp(username, email, password, confirmPassword) {
 
   showNotification('CREATING SECURE PROFILE...', 'info');
 
-  fetch('/api/auth/signup', {
+  fetch(`${API_URL}/api/auth/signup`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ username, email, password })
+    body: JSON.stringify({ username, email, password }),
+    credentials: 'include'
   })
   .then(res => res.json())
   .then(data => {
     if (data.success) {
       showNotification('ACCESS GRANTED: Account registered!', 'success');
       setTimeout(() => {
-        window.location.href = '/dashboard';
+        window.location.href = 'dashboard.html';
       }, 1500);
     } else {
       showNotification(data.message || 'Signup failed.', 'error');
@@ -124,17 +125,18 @@ function handleSignIn(email, password) {
 
   showNotification('DECRYPTING CREDENTIALS...', 'info');
 
-  fetch('/api/auth/signin', {
+  fetch(`${API_URL}/api/auth/signin`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ email, password })
+    body: JSON.stringify({ email, password }),
+    credentials: 'include'
   })
   .then(res => res.json())
   .then(data => {
     if (data.success) {
       showNotification('ACCESS APPROVED. TERMINAL UNLOCKED.', 'success');
       setTimeout(() => {
-        window.location.href = '/dashboard';
+        window.location.href = 'dashboard.html';
       }, 1200);
     } else {
       showNotification(data.message || 'Access denied: Invalid identity.', 'error');
@@ -148,16 +150,16 @@ function handleSignIn(email, password) {
 
 // Logout Handler
 function logout() {
-  fetch('/api/auth/logout', { method: 'POST' })
+  fetch(`${API_URL}/api/auth/logout`, { method: 'POST', credentials: 'include' })
     .then(() => {
       localStorage.removeItem('currentUser');
       showNotification('CONNECTION TERMINATED.', 'info');
       setTimeout(() => {
-        window.location.href = '/';
+        window.location.href = 'index.html';
       }, 1000);
     })
     .catch(() => {
-      window.location.href = '/';
+      window.location.href = 'index.html';
     });
 }
 
@@ -210,6 +212,55 @@ document.addEventListener('DOMContentLoaded', () => {
         handleSignUp(username, email, password, confirm);
       });
     }
+
+    // Dynamic Google button rendering
+    fetch(`${API_URL}/api/status/engine`, { credentials: 'include' })
+      .then(res => res.json())
+      .then(data => {
+        if (data.google_client_id) {
+          const container = document.getElementById('google-btn-container');
+          if (container) {
+            container.innerHTML = `
+              <div id="g_id_onload"
+                   data-client_id="${data.google_client_id}"
+                   data-context="signin"
+                   data-ux_mode="popup"
+                   data-callback="handleGoogleAuth"
+                   data-auto_prompt="false">
+              </div>
+              <div class="g_id_signin"
+                   data-type="standard"
+                   data-shape="rectangular"
+                   data-theme="dark"
+                   data-text="signin_with"
+                   data-size="large"
+                   data-logo_alignment="left"
+                   data-width="400">
+              </div>
+            `;
+            // Load button rendering if SDK is ready
+            if (window.google && window.google.accounts && window.google.accounts.id) {
+              window.google.accounts.id.initialize({
+                client_id: data.google_client_id,
+                callback: window.handleGoogleAuth
+              });
+              const btn = document.querySelector('.g_id_signin');
+              if (btn) {
+                window.google.accounts.id.renderButton(btn, {
+                  type: "standard",
+                  shape: "rectangular",
+                  theme: "dark",
+                  text: "signin_with",
+                  size: "large",
+                  logo_alignment: "left",
+                  width: 400
+                });
+              }
+            }
+          }
+        }
+      })
+      .catch(err => console.error("Error loading engine status:", err));
   }
 
   if (isDashboardPage) {
@@ -229,17 +280,18 @@ window.handleGoogleAuth = function(response) {
   
   showNotification('VERIFYING IDENTITY WITH GOOGLE...', 'info');
   
-  fetch('/api/auth/google', {
+  fetch(`${API_URL}/api/auth/google`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ credential: response.credential })
+    body: JSON.stringify({ credential: response.credential }),
+    credentials: 'include'
   })
   .then(res => res.json())
   .then(data => {
     if (data.success) {
       showNotification('ACCESS APPROVED via Google.', 'success');
       setTimeout(() => {
-        window.location.href = '/dashboard';
+        window.location.href = 'dashboard.html';
       }, 1200);
     } else {
       showNotification(data.message || 'Google Authentication Failed', 'error');

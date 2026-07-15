@@ -83,7 +83,7 @@ function populateSchemaSelector() {
 function loadSchemaDefinitions(autoplay = true) {
   printConsoleLog('[SYS] Fetching MySQL database schemas...', 'var(--text-muted)');
 
-  fetch('/api/schema/definitions')
+  fetch(`${API_URL}/api/schema/definitions`, { credentials: 'include' })
     .then(res => res.json())
     .then(data => {
       dbSchemas = data;
@@ -347,10 +347,11 @@ function showDefaultTablePreview() {
     printConsoleLog(`[SYS] Seeding grid viewer with default table: "${firstTable}"`, 'var(--text-muted)');
 
     // Execute a simple SELECT query to fetch default table rows
-    fetch('/api/execute', {
+    fetch(`${API_URL}/api/execute`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ sql: `SELECT * FROM ${firstTable} LIMIT 10;`, schema: activeSchema })
+      body: JSON.stringify({ sql: `SELECT * FROM ${firstTable} LIMIT 10;`, schema: activeSchema }),
+      credentials: 'include'
     })
       .then(res => res.json())
       .then(res => {
@@ -369,7 +370,7 @@ function renderHistory() {
 
   container.innerHTML = '';
 
-  fetch('/api/history')
+  fetch(`${API_URL}/api/history`, { credentials: 'include' })
     .then(res => res.json())
     .then(history => {
       if (!history || history.length === 0) {
@@ -417,10 +418,11 @@ function renderHistory() {
 }
 
 function addToHistory(english, sql, engine) {
-  fetch('/api/history', {
+  fetch(`${API_URL}/api/history`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ english, sql, schema: activeSchema, engine })
+    body: JSON.stringify({ english, sql, schema: activeSchema, engine }),
+    credentials: 'include'
   })
     .then(res => res.json())
     .then(res => {
@@ -433,7 +435,7 @@ function addToHistory(english, sql, engine) {
 
 // Helper to query backend translation engine status
 function checkEngineStatus() {
-  fetch('/api/status/engine')
+  fetch(`${API_URL}/api/status/engine`, { credentials: 'include' })
     .then(res => res.json())
     .then(data => {
       if (data.active_engine === 'Gemini AI') {
@@ -456,7 +458,7 @@ function checkEngineStatus() {
 document.addEventListener('DOMContentLoaded', () => {
   // Only execute dashboard logic if on dashboard page
   const pathname = window.location.pathname;
-  const isDashboardPage = pathname.startsWith('/dashboard') || pathname.endsWith('dashboard.html');
+  const isDashboardPage = pathname.endsWith('dashboard.html') || pathname.includes('dashboard');
   if (!isDashboardPage) return;
 
   // Initialize view
@@ -502,10 +504,11 @@ document.addEventListener('DOMContentLoaded', () => {
 
       printConsoleLog(`[NLP] Sending English statement to neural compiler...`, 'var(--text-muted)');
 
-      fetch('/api/translate', {
+      fetch(`${API_URL}/api/translate`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ english: englishText, schema: activeSchema })
+        body: JSON.stringify({ english: englishText, schema: activeSchema }),
+        credentials: 'include'
       })
         .then(res => res.json())
         .then(data => {
@@ -566,8 +569,8 @@ document.addEventListener('DOMContentLoaded', () => {
                   if (badge) badge.textContent = 'SIMULATION OUTPUT';
                 } else {
                   if (dbTablePreview) {
-                    if (badge) badge.textContent = 'SIMULATION OUTPUT';
-                    dbTablePreview.innerHTML = `
+                     if (badge) badge.textContent = 'SIMULATION OUTPUT';
+                     dbTablePreview.innerHTML = `
                       <div style="padding: 20px; font-family: var(--font-mono); color: var(--neon-green); font-size: 13px; text-transform: uppercase; letter-spacing: 1px;">
                         <div style="border-bottom: 1px solid rgba(255,255,255,0.1); padding-bottom: 8px; margin-bottom: 12px; font-weight: bold; color: var(--neon-cyan);">[SYS] RUN COMPILATION SUCCESS</div>
                         <div>${data.simulated_output.replace(/\n/g, '<br>')}</div>
@@ -652,10 +655,11 @@ document.addEventListener('DOMContentLoaded', () => {
       printConsoleLog(`[SQL] Compiling generated query string...`, 'var(--text-muted)');
       showNotification('Compiling query in database...', 'info');
 
-      fetch('/api/execute', {
+      fetch(`${API_URL}/api/execute`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ sql: lastGeneratedSQL, schema: activeSchema })
+        body: JSON.stringify({ sql: lastGeneratedSQL, schema: activeSchema }),
+        credentials: 'include'
       })
         .then(res => res.json())
         .then(res => {
@@ -685,9 +689,10 @@ document.addEventListener('DOMContentLoaded', () => {
   const btnClearHistory = document.getElementById('btn-clear-history');
   if (btnClearHistory) {
     btnClearHistory.addEventListener('click', () => {
-      fetch('/api/history/clear', {
+      fetch(`${API_URL}/api/history/clear`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' }
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include'
       })
       .then(res => res.json())
       .then(res => {
@@ -742,10 +747,11 @@ document.addEventListener('DOMContentLoaded', () => {
 
       printConsoleLog(`[SYS] Creating custom schema table: "${tableName}"`, 'var(--text-muted)');
 
-      fetch('/api/schema/create', {
+      fetch(`${API_URL}/api/schema/create`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ table: tableName, columns: cols })
+        body: JSON.stringify({ table: tableName, columns: cols }),
+        credentials: 'include'
       })
         .then(res => res.json())
         .then(data => {

@@ -10,7 +10,8 @@ try:
     MYSQL_AVAILABLE = True
 except ImportError:
     MYSQL_AVAILABLE = False
-from flask import Flask, request, jsonify, render_template, session, redirect, url_for
+from flask import Flask, request, jsonify, session, render_template
+from flask_cors import CORS
 
 # Load environment variables from .env file
 def load_env():
@@ -27,8 +28,18 @@ def load_env():
 
 load_env()
 
-app = Flask(__name__, template_folder='templates', static_folder='static')
+app = Flask(
+    __name__,
+    template_folder="templates",
+    static_folder="static"
+)
+# Enable CORS with credentials support
+CORS(app, supports_credentials=True)
 app.secret_key = 'cyberpunk_neural_key_1984'
+app.config.update(
+    SESSION_COOKIE_SAMESITE='None',
+    SESSION_COOKIE_SECURE=True
+)
 
 def get_mysql_connection(db_name=None):
     if not MYSQL_AVAILABLE:
@@ -98,20 +109,25 @@ def init_databases():
 init_databases()
 
 # ==========================================
-# 2. PAGE SERVING ROUTES
+# 2. ROUTING & TEMPLATE SERVING
 # ==========================================
 @app.route('/')
-@app.route('/login')
+@app.route('/index.html')
 def index():
-    if 'username' in session:
-        return redirect(url_for('dashboard'))
-    return render_template('index.html', google_client_id=os.environ.get('GOOGLE_CLIENT_ID', ''))
+    return render_template('index.html')
 
 @app.route('/dashboard')
+@app.route('/dashboard.html')
 def dashboard():
-    if 'username' not in session:
-        return redirect(url_for('index'))
     return render_template('dashboard.html')
+
+@app.route('/api/status')
+def api_status():
+    return jsonify({
+        'status': 'online',
+        'message': 'QueryCraft AI Unified Service',
+        'mysql_available': MYSQL_AVAILABLE
+    })
 
 # ==========================================
 # 3. AUTHENTICATION API
