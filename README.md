@@ -8,7 +8,7 @@ QueryCraft AI is an advanced, full-stack database interface and neural translati
 
 *   **🧠 Neural Compiler**: Seamless translation powered by **Google Gemini AI (2.5-Flash)**, with a rule-based Python parsing engine as a local fallback.
 *   **💾 CENTRALIZED DATABASE HISTORY**: centralizes user accounts and translation logs inside a dedicated MySQL `history` database, automatically created and seeded on startup.
-*   **🔍 DYNAMIC SCHEMA DISCOVERY**: Automatically discovers all available database schemas (e.g. `farmers_easeuse`, `sakila`, `world`, etc.) on your MySQL server and populates an interactive schema explorer.
+*   **🔍 DYNAMIC SCHEMA DISCOVERY**: Automatically discovers all available database schemas (e.g. `farmers_easeuse`, `world`, etc.) on your MySQL server and populates an interactive schema explorer.
 *   **💻 INTEGRATED SQL COMPILER TERMINAL**: Display syntax-highlighted SQL queries, and execute them directly against selected databases with results rendered in a modern data preview grid.
 *   **🌐 GOOGLE OAUTH SIMULATION**: Complete Google Sign-In and registration flow with support for simulated mock credentials for rapid localized testing.
 
