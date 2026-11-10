@@ -7,6 +7,25 @@ let dbSchemas = {};
 
 // Hardcoded Templates for quick-fill selections
 const queryTemplates = {
+  farmers_easeuse: [
+    { label: "Show all products", text: "show all products" },
+    { label: "Products > $50", text: "find products with price greater than 50" },
+    { label: "List farmers", text: "list all farmers" },
+    { label: "Pending orders", text: "show pending orders" },
+    { label: "Count total orders", text: "how many orders are there" },
+    { label: "Average product price", text: "what is the average price of products" },
+    { label: "Cheapest product", text: "find cheapest product" },
+    { label: "Transporter details", text: "show all transportation" }
+  ],
+  db: [
+    { label: "List all employees", text: "list all employees" },
+    { label: "Workers salary > 50000", text: "find workers with salary greater than 50000" },
+    { label: "CS Students", text: "find students in computer science department" },
+    { label: "Active machines", text: "select machines with status active" },
+    { label: "Movies with Rating A", text: "find movies with rating A" },
+    { label: "Highest salary employee", text: "who is the highest paid employee" },
+    { label: "Count machines", text: "how many machines" }
+  ],
   ecommerce: [
     { label: "List all products", text: "select all products" },
     { label: "Electronics > $100", text: "find products where category is Electronics and price is greater than 100" },
@@ -41,6 +60,18 @@ const queryTemplates = {
 // Global App State
 let activeSchema = 'mysql';
 let lastGeneratedSQL = '';
+let activeOrchestrationMode = 'ADAPTIVE_CONFIDENCE';
+let lastOrchestrationResult = null;
+let currentTableColumns = [];
+let currentTableData = [];
+
+const orchestrationDescriptions = {
+  ADAPTIVE_CONFIDENCE: "Decides dynamically at each step whether to stop reasoning or hand off to specialized agents based on multi-signal confidence, query complexity, and token budget.",
+  FIXED_PIPELINE: "Unconditionally routes every query through all 5 specialized agents (Router -> Schema -> Generator -> Verifier -> Repair) regardless of query difficulty.",
+  SINGLE_MODEL: "Direct monolithic single-pass prompt to Gemini AI without multi-agent decomposition, schema pruning, or self-correction.",
+  CONSENSUS_VOTING: "Generates multiple candidate queries across temperature variations and selects the consensus majority based on token agreement.",
+  RULE_BASED: "Local regex grammar engine operating with zero LLM API dependency and deterministic syntax rules."
+};
 
 // Helper to print messages in the simulated Terminal console on dashboard
 function printConsoleLog(msg, color = 'var(--text-secondary)') {
@@ -92,6 +123,7 @@ function loadSchemaDefinitions(autoplay = true) {
       populateSchemaSelector();
       renderSchemaTree();
       renderTemplates();
+      renderQuickTableChips();
       if (autoplay) {
         showDefaultTablePreview();
       }
@@ -186,6 +218,7 @@ function insertTextAtCursor(inputField, textToInsert) {
   const currentText = inputField.value;
 
   inputField.value = currentText.substring(0, startPos) + textToInsert + currentText.substring(endPos);
+  inputField.dispatchEvent(new Event('input'));
 
   inputField.focus();
   const nextCursorPos = startPos + textToInsert.length;
@@ -198,7 +231,38 @@ function renderTemplates() {
   if (!bar) return;
 
   bar.innerHTML = '';
-  const templates = queryTemplates[activeSchema] || queryTemplates['mysql'] || [];
+  let templates = queryTemplates[activeSchema];
+
+  // Dynamic template generation for any MySQL database
+  if (!templates && dbSchemas[activeSchema]) {
+    templates = [];
+    const tables = Object.keys(dbSchemas[activeSchema]);
+    if (tables.length > 0) {
+      const t1 = tables[0];
+      templates.push({ label: `Show ${t1}`, text: `show all ${t1}` });
+      templates.push({ label: `Count ${t1}`, text: `how many ${t1} are there` });
+      if (tables.length > 1) {
+        const t2 = tables[1];
+        templates.push({ label: `List ${t2}`, text: `select all ${t2}` });
+        templates.push({ label: `Count ${t2}`, text: `count ${t2}` });
+      }
+      const firstCols = dbSchemas[activeSchema][t1];
+      if (firstCols) {
+        for (const colName in firstCols) {
+          const typeStr = String(firstCols[colName]).toLowerCase();
+          if (colName.toLowerCase() !== 'id' && (typeStr.includes('int') || typeStr.includes('decimal') || typeStr.includes('float'))) {
+            templates.push({ label: `${t1} with ${colName} > 10`, text: `find ${t1} with ${colName} greater than 10` });
+            templates.push({ label: `Highest ${colName}`, text: `highest ${colName} in ${t1}` });
+            break;
+          }
+        }
+      }
+    }
+  }
+
+  if (!templates || templates.length === 0) {
+    templates = queryTemplates['mysql'] || [];
+  }
 
   templates.forEach(t => {
     const btn = document.createElement('button');
@@ -208,6 +272,7 @@ function renderTemplates() {
       const input = document.getElementById('english-input');
       if (input) {
         input.value = t.text;
+        input.dispatchEvent(new Event('input'));
         input.focus();
       }
     });
@@ -292,42 +357,106 @@ function parseMarkdownTable(markdown) {
   return { columns, data };
 }
 
-// 5. SHOW DATABASE RECORDS TABLE VIEWER (Renders Flask server outputs)
+// 5. SHOW DATABASE RECORDS TABLE VIEWER (Renders live rows and columns)
 function renderDbPreviewTable(columnsArray, dataArray, optionalTableName = '') {
+  currentTableColumns = columnsArray || [];
+  currentTableData = dataArray || [];
+
   const container = document.getElementById('db-table-preview');
   const badge = document.getElementById('active-table-badge');
+  const filterInput = document.getElementById('grid-filter-input');
+  const btnExport = document.getElementById('btn-export-csv');
+  const footerBar = document.getElementById('grid-footer-bar');
+  const footerDb = document.getElementById('footer-db-name');
+  const footerRows = document.getElementById('footer-row-count');
+  const footerCols = document.getElementById('footer-col-count');
+
   if (!container) return;
 
-  if (optionalTableName && badge) {
-    badge.textContent = `TABLE: ${optionalTableName}`;
-  } else if (badge) {
-    badge.textContent = `QUERY OUTPUT`;
+  const count = currentTableData ? currentTableData.length : 0;
+  const colCount = currentTableColumns ? currentTableColumns.length : 0;
+
+  if (badge) {
+    if (optionalTableName) {
+      badge.innerHTML = `
+        <span class="grid-stat-badge" style="color:var(--neon-purple); border-color:rgba(157,13,247,0.4);">TABLE: <strong>${optionalTableName.toUpperCase()}</strong></span>
+        <span class="grid-stat-badge">FIELDS: <strong>${colCount}</strong></span>
+        <span class="grid-stat-badge green">ROWS: <strong>${count}</strong></span>
+      `;
+    } else {
+      badge.innerHTML = `
+        <span class="grid-stat-badge">COLUMNS: <strong>${colCount}</strong></span>
+        <span class="grid-stat-badge green">ROWS: <strong>${count}</strong></span>
+      `;
+    }
   }
 
-  if (!dataArray || dataArray.length === 0) {
+  if (footerBar) footerBar.style.display = 'flex';
+  if (footerDb) {
+    const valSpan = footerDb.querySelector('.val');
+    if (valSpan) valSpan.textContent = activeSchema ? activeSchema.toUpperCase() : 'MYSQL';
+  }
+  if (footerRows) {
+    const valSpan = footerRows.querySelector('.val');
+    if (valSpan) valSpan.textContent = count;
+  }
+  if (footerCols) {
+    const valSpan = footerCols.querySelector('.val');
+    if (valSpan) valSpan.textContent = colCount;
+  }
+
+  if (filterInput) {
+    filterInput.style.display = count > 0 ? 'inline-block' : 'none';
+    filterInput.value = '';
+  }
+  if (btnExport) {
+    btnExport.style.display = count > 0 ? 'inline-flex' : 'none';
+  }
+
+  if (!currentTableData || currentTableData.length === 0) {
     container.innerHTML = `
       <div class="simulator-empty">
-        <span>EMPTY SET // 0 ROWS RETURNED</span>
+        <svg class="icon-svg" viewBox="0 0 24 24" width="32" height="32" fill="currentColor" style="opacity: 0.3;">
+          <path d="M12 2C6.48 2 2 4.02 2 6.5v11c0 2.48 4.48 4.5 10 4.5s10-2.02 10-4.5v-11C22 4.02 17.52 2 12 2zm0 3c4.13 0 7.5 1.25 7.5 2.5S16.13 10 12 10s-7.5-1.25-7.5-2.5S7.87 5 12 5zm0 14c-4.13 0-7.5-1.25-7.5-2.5V14c1.61 1.2 4.39 2 7.5 2s5.89-.8 7.5-2v2.5c0 1.25-3.37 2.5-7.5 2.5zm0-4.5c-4.13 0-7.5-1.25-7.5-2.5V9.5c1.61 1.2 4.39 2 7.5 2s5.89-.8 7.5-2v2.5c0 1.25-3.37 2.5-7.5 2.5z"/>
+        </svg>
+        <span>EMPTY SET // 0 RECORDS MATCHING QUERY</span>
       </div>
     `;
     return;
   }
 
-  // Create Table elements
-  let html = `<table class="neon-table"><thead><tr>`;
+  renderTableRows(currentTableColumns, currentTableData);
+}
 
-  // Headers
+// Render HTML rows for active data set
+function renderTableRows(columnsArray, dataArray) {
+  const container = document.getElementById('db-table-preview');
+  if (!container) return;
+
+  if (!dataArray || dataArray.length === 0) {
+    container.innerHTML = `
+      <div class="simulator-empty">
+        <span>NO MATCHING ROWS FOUND FOR FILTER</span>
+      </div>
+    `;
+    return;
+  }
+
+  let html = `<table class="neon-table"><thead><tr>`;
+  html += `<th class="th-index">#</th>`;
   columnsArray.forEach(col => {
     html += `<th>${col}</th>`;
   });
   html += `</tr></thead><tbody>`;
 
-  // Rows
-  dataArray.forEach(row => {
+  dataArray.forEach((row, idx) => {
     html += `<tr>`;
+    html += `<td class="td-index">${idx + 1}</td>`;
     columnsArray.forEach(col => {
       let cellVal = row[col];
-      if (cellVal === null || cellVal === undefined) cellVal = '<span style="color:var(--text-muted)">NULL</span>';
+      if (cellVal === null || cellVal === undefined) {
+        cellVal = '<span style="color:var(--text-muted); font-size:10px;">NULL</span>';
+      }
       html += `<td>${cellVal}</td>`;
     });
     html += `</tr>`;
@@ -335,6 +464,72 @@ function renderDbPreviewTable(columnsArray, dataArray, optionalTableName = '') {
 
   html += `</tbody></table>`;
   container.innerHTML = html;
+}
+
+// Export active table dataset to CSV file
+function exportTableToCSV(columnsArray, dataArray, filename = 'query_results.csv') {
+  if (!dataArray || dataArray.length === 0) return;
+  const headers = columnsArray.join(',');
+  const rows = dataArray.map(row => 
+    columnsArray.map(col => {
+      let val = row[col] === null || row[col] === undefined ? '' : String(row[col]);
+      if (val.includes(',') || val.includes('"') || val.includes('\n')) {
+        val = `"${val.replace(/"/g, '""')}"`;
+      }
+      return val;
+    }).join(',')
+  );
+  const csvContent = 'data:text/csv;charset=utf-8,' + [headers, ...rows].join('\n');
+  const encodedUri = encodeURI(csvContent);
+  const link = document.createElement('a');
+  link.setAttribute('href', encodedUri);
+  link.setAttribute('download', filename);
+  document.body.appendChild(link);
+  link.click();
+  document.body.removeChild(link);
+}
+
+// Render quick table chips in right sidebar
+function renderQuickTableChips() {
+  const container = document.getElementById('quick-tables-chips');
+  if (!container) return;
+  container.innerHTML = '';
+
+  const schema = dbSchemas[activeSchema];
+  if (!schema || Object.keys(schema).length === 0) {
+    container.innerHTML = '<span style="font-size:10px; color:var(--text-muted); font-family:var(--font-mono);">No tables detected</span>';
+    return;
+  }
+
+  Object.keys(schema).forEach(table => {
+    const btn = document.createElement('button');
+    btn.className = 'quick-table-btn';
+    btn.textContent = table;
+    btn.title = `Fetch all rows & columns for "${table}"`;
+    btn.addEventListener('click', () => {
+      document.querySelectorAll('.quick-table-btn').forEach(b => b.classList.remove('active'));
+      btn.classList.add('active');
+      printConsoleLog(`[TABLE] Fetching table rows: "${table}"`, 'var(--neon-purple)');
+      
+      fetch(`${API_URL}/api/execute`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ sql: `SELECT * FROM ${table} LIMIT 50;`, schema: activeSchema }),
+        credentials: 'include'
+      })
+        .then(r => r.json())
+        .then(r => {
+          if (r.success && r.data && r.columns) {
+            renderDbPreviewTable(r.columns, r.data, table);
+            printConsoleLog(`[DB] Retrieved ${r.data.length} records from "${table}".`, 'var(--neon-green)');
+            const previewCard = document.getElementById('db-preview-card');
+            if (previewCard) previewCard.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+          }
+        })
+        .catch(err => console.error(err));
+    });
+    container.appendChild(btn);
+  });
 }
 
 // Show active database default primary table on load
@@ -350,12 +545,12 @@ function showDefaultTablePreview() {
     fetch(`${API_URL}/api/execute`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ sql: `SELECT * FROM ${firstTable} LIMIT 10;`, schema: activeSchema }),
+      body: JSON.stringify({ sql: `SELECT * FROM ${firstTable} LIMIT 20;`, schema: activeSchema }),
       credentials: 'include'
     })
       .then(res => res.json())
       .then(res => {
-        if (res.success) {
+        if (res.success && res.columns && res.data) {
           renderDbPreviewTable(res.columns, res.data, firstTable);
         }
       })
@@ -439,12 +634,12 @@ function checkEngineStatus() {
     .then(res => res.json())
     .then(data => {
       if (data.active_engine === 'Gemini AI') {
-        printConsoleLog('[SYS] Neural Engine: Gemini AI Connected (gemini-2.5-flash) // Status: ACTIVE', 'var(--neon-cyan)');
+        printConsoleLog('[SYS] Neural Engine: Gemini AI Connected (' + (data.key_source === 'browser' ? 'your key' : 'server key') + ') // Status: ACTIVE', 'var(--neon-cyan)');
         const statusSpan = document.querySelector('.dash-status span:last-child');
         if (statusSpan) statusSpan.textContent = 'GEMINI_NEURAL_ENGINE // ONLINE';
       } else {
         printConsoleLog('[WARN] Neural Engine: API Key not found. Mode: RULE_BASED_PARSER', 'var(--neon-pink)');
-        printConsoleLog('[INFO] Configure GEMINI_API_KEY in .env file to activate Neural LLM mode.', 'var(--text-muted)');
+        printConsoleLog('[INFO] Paste a Gemini API key in the top bar, or set GEMINI_API_KEY in .env, to activate Neural LLM mode.', 'var(--text-muted)');
         const statusSpan = document.querySelector('.dash-status span:last-child');
         if (statusSpan) statusSpan.textContent = 'RULE_BASED_ENGINE // ACTIVE';
       }
@@ -454,14 +649,648 @@ function checkEngineStatus() {
     });
 }
 
+// ==========================================================================
+// MULTI-AGENT ORCHESTRATION HELPERS & VISUAL TRAJECTORY ENGINE
+// ==========================================================================
+
+function setupOrchestrationControls() {
+  const modeTabs = document.querySelectorAll('.btn-mode-tab');
+  const descText = document.getElementById('mode-desc-text');
+  const engineBadge = document.getElementById('output-engine-badge');
+
+  modeTabs.forEach(tab => {
+    tab.addEventListener('click', () => {
+      modeTabs.forEach(t => t.classList.remove('active'));
+      tab.classList.add('active');
+      activeOrchestrationMode = tab.dataset.mode;
+
+      if (descText && orchestrationDescriptions[activeOrchestrationMode]) {
+        descText.textContent = orchestrationDescriptions[activeOrchestrationMode];
+      }
+
+      const modeTitle = tab.querySelector('.mode-tab-title');
+      if (engineBadge && modeTitle) {
+        engineBadge.textContent = modeTitle.textContent.toUpperCase();
+      }
+
+      printConsoleLog(`[ORCHESTRATOR] Paradigm selected: ${activeOrchestrationMode}`, 'var(--neon-cyan)');
+    });
+  });
+
+  // Modal close handlers
+  const btnCloseBenchmark = document.getElementById('btn-close-benchmark');
+  const benchmarkModal = document.getElementById('benchmark-modal');
+  if (btnCloseBenchmark && benchmarkModal) {
+    btnCloseBenchmark.addEventListener('click', () => {
+      benchmarkModal.style.display = 'none';
+    });
+  }
+
+  const btnCloseInspector = document.getElementById('btn-close-inspector');
+  const inspectorModal = document.getElementById('inspector-modal');
+  if (btnCloseInspector && inspectorModal) {
+    btnCloseInspector.addEventListener('click', () => {
+      inspectorModal.style.display = 'none';
+    });
+  }
+
+  // Benchmark button handler
+  const btnOpenBenchmark = document.getElementById('btn-open-benchmark');
+  if (btnOpenBenchmark) {
+    btnOpenBenchmark.addEventListener('click', () => {
+      const englishInput = document.getElementById('english-input');
+      const query = (englishInput && englishInput.value.trim()) || 'Find all users from USA ordered by name';
+      runBenchmarkComparison(query);
+    });
+  }
+
+  // Agent Node Click Listeners for Inspection
+  const agentNodes = document.querySelectorAll('.agent-node');
+  agentNodes.forEach(node => {
+    node.addEventListener('click', () => {
+      const agentKey = node.dataset.agent;
+      openAgentInspector(agentKey);
+    });
+  });
+
+  // Diagnostics Drawer Toggle Handler
+  const btnToggleDiag = document.getElementById('btn-toggle-diagnostics');
+  const diagDrawer = document.getElementById('agent-diagnostics-drawer');
+  const diagArrow = document.getElementById('diag-toggle-arrow');
+  if (btnToggleDiag && diagDrawer) {
+    btnToggleDiag.addEventListener('click', () => {
+      const isHidden = diagDrawer.style.display === 'none' || !diagDrawer.style.display;
+      diagDrawer.style.display = isHidden ? 'block' : 'none';
+      if (diagArrow) diagArrow.textContent = isHidden ? '▴' : '▾';
+    });
+  }
+
+  // Live Word & Character Counter for English Query Writing Studio
+  const englishInputArea = document.getElementById('english-input');
+  const charWordCount = document.getElementById('char-word-count');
+  if (englishInputArea && charWordCount) {
+    const updateCount = () => {
+      const text = englishInputArea.value;
+      const chars = text.length;
+      const words = text.trim() ? text.trim().split(/\s+/).length : 0;
+      charWordCount.textContent = `${chars} characters (${words} words)`;
+    };
+    englishInputArea.addEventListener('input', updateCount);
+    updateCount();
+
+    // Ctrl + Enter shortcut to trigger translation
+    englishInputArea.addEventListener('keydown', (e) => {
+      if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') {
+        e.preventDefault();
+        const btnTranslate = document.getElementById('btn-translate');
+        if (btnTranslate) btnTranslate.click();
+      }
+    });
+  }
+}
+
+function resetPipelineUI() {
+  // 1. Reset background diagnostics nodes
+  const nodeIds = ['router', 'schema', 'generator', 'verifier', 'repair'];
+  nodeIds.forEach(id => {
+    const node = document.getElementById(`node-agent-${id}`);
+    const badge = document.getElementById(`badge-agent-${id}`);
+    const meta = document.getElementById(`meta-agent-${id}`);
+    if (node) {
+      node.className = 'agent-node status-pending';
+    }
+    if (badge) badge.textContent = 'IDLE';
+    if (meta) meta.textContent = '0.0ms';
+  });
+
+  const connectors = document.querySelectorAll('.pipeline-connector');
+  connectors.forEach(c => c.classList.remove('active'));
+
+  const statusBadge = document.getElementById('pipeline-status-badge');
+  if (statusBadge) {
+    statusBadge.textContent = 'RUNNING';
+    statusBadge.className = 'badge-mini';
+  }
+
+  // 2. Reset Live Working Monitor (Shows only the working of the agents)
+  const workingCard = document.getElementById('agent-working-card');
+  if (workingCard) workingCard.classList.add('working-active');
+
+  const idleMsg = document.getElementById('working-idle-msg');
+  if (idleMsg) idleMsg.style.display = 'none';
+
+  const workingStepper = document.getElementById('working-stepper');
+  if (workingStepper) workingStepper.style.display = 'flex';
+
+  const workingLiveLine = document.getElementById('working-live-line');
+  if (workingLiveLine) workingLiveLine.style.display = 'flex';
+
+  const workingStatusBadge = document.getElementById('working-status-badge');
+  if (workingStatusBadge) {
+    workingStatusBadge.textContent = 'WORKING...';
+    workingStatusBadge.className = 'working-status-badge working';
+  }
+
+  const workingPulseDot = document.getElementById('working-pulse-dot');
+  if (workingPulseDot) workingPulseDot.className = 'working-pulse-dot pulsing';
+
+  const workingTelemetry = document.getElementById('working-telemetry-compact');
+  if (workingTelemetry) workingTelemetry.style.display = 'flex';
+
+  nodeIds.forEach(id => {
+    const wstep = document.getElementById(`wstep-${id}`);
+    const wstate = document.getElementById(`wstate-${id}`);
+    if (wstep) wstep.className = 'working-step status-pending';
+    if (wstate) wstate.textContent = 'QUEUED';
+  });
+
+  for (let i = 1; i <= 4; i++) {
+    const wconn = document.getElementById(`wconn-${i}`);
+    if (wconn) wconn.classList.remove('active');
+  }
+
+  const workingLiveText = document.getElementById('working-live-text');
+  if (workingLiveText) {
+    workingLiveText.textContent = `[Step 1/5] Dispatching query to Router Agent (${activeOrchestrationMode})...`;
+  }
+
+  // 3. Reset Confidence HUD elements
+  const totalConf = document.getElementById('hud-total-confidence');
+  if (totalConf) totalConf.textContent = '--%';
+  const thresholdTag = document.getElementById('hud-threshold-tag');
+  if (thresholdTag) thresholdTag.textContent = 'Threshold: --%';
+
+  const pillComplexity = document.getElementById('pill-complexity');
+  if (pillComplexity) pillComplexity.textContent = 'ANALYZING...';
+  const pillTokens = document.getElementById('pill-tokens-saved');
+  if (pillTokens) pillTokens.textContent = '--%';
+  const pillLatency = document.getElementById('pill-latency-saved');
+  if (pillLatency) pillLatency.textContent = '--%';
+  const pillDecision = document.getElementById('pill-decision');
+  if (pillDecision) pillDecision.textContent = 'EVALUATING';
+
+  ['model', 'exec', 'verifier', 'agreement'].forEach(k => {
+    const fill = document.getElementById(`meter-fill-${k}`);
+    const val = document.getElementById(`sig-val-${k}`);
+    if (fill) fill.style.width = '0%';
+    if (val) val.textContent = '--%';
+  });
+}
+
+function animatePipelineTrajectory(data) {
+  if (!data || !data.trajectory) return;
+
+  const agentMap = {
+    'router': 'router',
+    'schema_linker': 'schema',
+    'sql_generator': 'generator',
+    'verifier': 'verifier',
+    'repair': 'repair',
+    'single_model': 'generator',
+    'voting_generator': 'generator',
+    'rule_parser': 'generator'
+  };
+
+  data.trajectory.forEach((step, idx) => {
+    const domKey = agentMap[step.agent_id] || 'generator';
+    const node = document.getElementById(`node-agent-${domKey}`);
+    const badge = document.getElementById(`badge-agent-${domKey}`);
+    const meta = document.getElementById(`meta-agent-${domKey}`);
+    const conn = document.getElementById(`conn-${idx}-${idx+1}`);
+
+    // Live working stepper elements
+    const wstep = document.getElementById(`wstep-${domKey}`);
+    const wstate = document.getElementById(`wstate-${domKey}`);
+    const wconn = document.getElementById(`wconn-${idx}`);
+    const workingLiveText = document.getElementById('working-live-text');
+
+    setTimeout(() => {
+      // 1. Update background diagnostics card
+      if (node && badge) {
+        if (step.status === 'PASSED') {
+          node.className = 'agent-node status-passed';
+          badge.textContent = 'PASSED';
+        } else if (step.status === 'STOP_SATISFIED' || step.status.startsWith('VERIFY_PASS')) {
+          // the verifier ran and its check passed (STOP_SATISFIED = all stopping conditions met)
+          node.className = 'agent-node status-passed';
+          badge.textContent = step.status === 'STOP_SATISFIED' ? 'PASSED · STOP' : 'PASSED';
+        } else if (step.status === 'BYPASSED_EARLY_EXIT') {
+          node.className = 'agent-node status-bypassed';
+          badge.textContent = '⚡ FAST EXIT';
+        } else if (step.status === 'BYPASSED_NOT_NEEDED') {
+          node.className = 'agent-node status-bypassed';
+          badge.textContent = 'BYPASSED';
+        } else if (step.status.includes('ERROR') || step.status.includes('ESCALATED')) {
+          node.className = 'agent-node status-escalated';
+          badge.textContent = '🚨 DEFECT';
+        } else if (step.status === 'CORRECTED') {
+          node.className = 'agent-node status-corrected';
+          badge.textContent = '✅ REPAIRED';
+        }
+        if (meta) meta.textContent = `${step.duration_ms}ms`;
+      }
+      if (conn) conn.classList.add('active');
+
+      // 2. Update visible Live Working Monitor (shows only the working of them!)
+      if (wstep && wstate) {
+        if (step.status === 'PASSED') {
+          wstep.className = 'working-step status-passed';
+          wstate.textContent = `PASSED (${step.duration_ms}ms)`;
+        } else if (step.status === 'STOP_SATISFIED' || step.status.startsWith('VERIFY_PASS')) {
+          wstep.className = 'working-step status-passed';
+          wstate.textContent = step.status === 'STOP_SATISFIED' ? `PASSED · STOP (${step.duration_ms}ms)` : `PASSED (${step.duration_ms}ms)`;
+        } else if (step.status === 'BYPASSED_EARLY_EXIT') {
+          wstep.className = 'working-step status-bypassed';
+          wstate.textContent = '⚡ FAST EXIT';
+        } else if (step.status === 'BYPASSED_NOT_NEEDED') {
+          wstep.className = 'working-step status-bypassed';
+          wstate.textContent = 'BYPASSED';
+        } else if (step.status.includes('ERROR') || step.status.includes('ESCALATED')) {
+          wstep.className = 'working-step status-escalated';
+          wstate.textContent = 'DEFECT DETECTED';
+        } else if (step.status === 'CORRECTED') {
+          wstep.className = 'working-step status-repaired';
+          wstate.textContent = `REPAIRED (${step.duration_ms}ms)`;
+        }
+      }
+      if (wconn) wconn.classList.add('active');
+
+      // Update live status line with the active action being performed
+      if (workingLiveText) {
+        const actionSnippet = step.action || 'Executing reasoning phase...';
+        workingLiveText.textContent = `▶ [Agent ${idx + 1}: ${step.agent_name}] ${actionSnippet} (${step.duration_ms}ms, ${step.tokens_used} tok)`;
+      }
+    }, idx * 10);
+  });
+
+  const finalDelay = data.trajectory.length * 10 + 5;
+  setTimeout(() => {
+    const statusBadge = document.getElementById('pipeline-status-badge');
+    const workingStatusBadge = document.getElementById('working-status-badge');
+    const workingPulseDot = document.getElementById('working-pulse-dot');
+    const workingLiveText = document.getElementById('working-live-text');
+    const workingCard = document.getElementById('agent-working-card');
+
+    if (workingPulseDot) workingPulseDot.className = 'working-pulse-dot';
+    if (workingCard) workingCard.classList.remove('working-active');
+
+    let summaryMsg = '';
+    const durationSec = ((data.metrics?.duration_ms || 350) / 1000).toFixed(2);
+    const tokensSaved = data.metrics?.tokens_saved_pct || 0;
+
+    if (data.early_exit_taken) {
+      if (statusBadge) {
+        statusBadge.textContent = `⚡ FAST-PATH EXIT (SAVED ${tokensSaved}%)`;
+        statusBadge.style.color = 'var(--neon-green)';
+      }
+      if (workingStatusBadge) {
+        workingStatusBadge.textContent = '⚡ FAST-PATH EXIT';
+        workingStatusBadge.className = 'working-status-badge passed';
+      }
+      summaryMsg = `✅ Collaborative synthesis complete in ${durationSec}s // Early-exit triggered at step 3 (Saved ${tokensSaved}% tokens) // Confidence: ${((data.confidence?.total_confidence || 0.95) * 100).toFixed(1)}%`;
+    } else if (data.repaired) {
+      if (statusBadge) {
+        statusBadge.textContent = '✅ REPAIRED & VERIFIED';
+        statusBadge.style.color = '#ffd700';
+      }
+      if (workingStatusBadge) {
+        workingStatusBadge.textContent = '✅ REPAIRED & VERIFIED';
+        workingStatusBadge.className = 'working-status-badge repaired';
+      }
+      summaryMsg = `✅ Collaborative synthesis complete in ${durationSec}s // Defect autonomously detected and self-corrected by Repair Agent.`;
+    } else {
+      if (statusBadge) {
+        statusBadge.textContent = '✅ PIPELINE COMPLETE';
+        statusBadge.style.color = 'var(--neon-cyan)';
+      }
+      if (workingStatusBadge) {
+        workingStatusBadge.textContent = '✅ COMPLETED';
+        workingStatusBadge.className = 'working-status-badge passed';
+      }
+      summaryMsg = `✅ Multi-Agent Collaboration complete in ${durationSec}s // All active specialized agents verified query syntax & execution plan.`;
+    }
+
+    if (workingLiveText) {
+      workingLiveText.textContent = summaryMsg;
+    }
+  }, finalDelay);
+}
+
+function updateConfidenceHUD(data) {
+  if (!data) return;
+
+  const conf = data.confidence || {};
+  const metrics = data.metrics || {};
+  const complexity = data.complexity || {};
+
+  // Update visible compact telemetry in the live working monitor
+  const workingConfVal = document.getElementById('working-conf-val');
+  if (workingConfVal && conf.total_confidence !== undefined) {
+    workingConfVal.textContent = `${(conf.total_confidence * 100).toFixed(1)}%`;
+  }
+  const workingTokensVal = document.getElementById('working-tokens-val');
+  if (workingTokensVal && metrics.tokens_saved_pct !== undefined) {
+    workingTokensVal.textContent = `${metrics.tokens_saved_pct}%`;
+  }
+  const workingLatencyVal = document.getElementById('working-latency-val');
+  if (workingLatencyVal && metrics.duration_ms !== undefined) {
+    workingLatencyVal.textContent = `${metrics.duration_ms}ms`;
+  }
+
+  // Total Confidence
+  const hudTotal = document.getElementById('hud-total-confidence');
+  if (hudTotal && conf.total_confidence !== undefined) {
+    hudTotal.textContent = `${(conf.total_confidence * 100).toFixed(1)}%`;
+  }
+
+  // Threshold Tag
+  const hudThreshold = document.getElementById('hud-threshold-tag');
+  if (hudThreshold && conf.threshold !== undefined) {
+    hudThreshold.textContent = `Exit Threshold: ${(conf.threshold * 100).toFixed(1)}%`;
+  }
+
+  // Telemetry Pills
+  const pillComplexity = document.getElementById('pill-complexity');
+  if (pillComplexity && complexity.category) {
+    pillComplexity.textContent = `${complexity.category} (${complexity.complexity_score || '0.2'})`;
+  }
+
+  const pillTokens = document.getElementById('pill-tokens-saved');
+  if (pillTokens && metrics.tokens_saved_pct !== undefined) {
+    pillTokens.textContent = `${metrics.tokens_saved_pct}% (${metrics.total_tokens || 0} tok)`;
+  }
+
+  const pillLatency = document.getElementById('pill-latency-saved');
+  if (pillLatency && metrics.latency_saved_pct !== undefined) {
+    pillLatency.textContent = `${metrics.latency_saved_pct}% (${metrics.duration_ms || 0}ms)`;
+  }
+
+  const pillDecision = document.getElementById('pill-decision');
+  if (pillDecision && conf.action) {
+    pillDecision.textContent = conf.action.replace(/_/g, ' ');
+    pillDecision.className = 'pill-value';
+    const actionUpper = conf.action.toUpperCase();
+    if (actionUpper === 'STOP') {
+      pillDecision.classList.add('green');
+      pillDecision.title = 'STOP: Confidence ≥ 0.85, execution successful, verifier ≥ 0.85 (Return final SQL answer)';
+    } else if (actionUpper === 'VERIFY') {
+      pillDecision.classList.add('cyan');
+      pillDecision.title = 'VERIFY: Confidence 0.50–0.84, execution successful (Check semantic correctness)';
+    } else if (actionUpper === 'RETRIEVE') {
+      pillDecision.classList.add('yellow');
+      pillDecision.title = 'RETRIEVE: Schema relevance < 0.60 (Refine schema context)';
+    } else if (actionUpper === 'REPAIR') {
+      pillDecision.classList.add('pink');
+      pillDecision.title = 'REPAIR: Execution error or confidence < 0.50 (Correct SQL errors)';
+    } else if (actionUpper.includes('MULTIPLE')) {
+      pillDecision.classList.add('purple');
+      pillDecision.title = 'GENERATE MULTIPLE: Confidence 0.50–0.70 with ambiguity (Generate and compare candidates)';
+    } else {
+      pillDecision.classList.add('cyan');
+      pillDecision.title = 'GENERATE: Initial call or after retrieval update (Generate a new SQL candidate)';
+    }
+  }
+
+  // Micro Meters
+  const signals = [
+    { key: 'model', val: conf.c_model },
+    { key: 'exec', val: conf.c_exec },
+    { key: 'verifier', val: conf.c_verifier },
+    { key: 'agreement', val: conf.c_agreement }
+  ];
+
+  signals.forEach(s => {
+    const fill = document.getElementById(`meter-fill-${s.key}`);
+    const valTag = document.getElementById(`sig-val-${s.key}`);
+    const pct = s.val !== undefined ? Math.round(s.val * 100) : 0;
+    if (fill) fill.style.width = `${pct}%`;
+    if (valTag) valTag.textContent = `${pct}%`;
+  });
+}
+
+function openAgentInspector(agentKey) {
+  if (!lastOrchestrationResult || !lastOrchestrationResult.trajectory) {
+    showNotification('Run an orchestration query first to inspect agent traces.', 'info');
+    return;
+  }
+
+  const modal = document.getElementById('inspector-modal');
+  const title = document.getElementById('inspector-title');
+  const content = document.getElementById('inspector-content-body');
+  if (!modal || !title || !content) return;
+
+  const agentMap = {
+    'router': ['router'],
+    'schema_linker': ['schema_linker', 'schema'],
+    'sql_generator': ['sql_generator', 'generator', 'single_model', 'voting_generator', 'rule_parser'],
+    'verifier': ['verifier'],
+    'repair': ['repair']
+  };
+
+  const allowedIds = agentMap[agentKey] || [agentKey];
+  const step = lastOrchestrationResult.trajectory.find(t => allowedIds.includes(t.agent_id)) || lastOrchestrationResult.trajectory[0];
+
+  title.textContent = `[AGENT TRACE] ${step.agent_name.toUpperCase()}`;
+
+  content.innerHTML = `
+    <div class="inspector-section">
+      <div class="inspector-section-title">AGENT STATUS & EXECUTION TELEMETRY</div>
+      <div style="display: flex; gap: 10px; margin-bottom: 8px;">
+        <span class="badge-mini" style="background: rgba(0, 242, 254, 0.2); border-color: var(--neon-cyan);">${step.status}</span>
+        <span style="color: var(--text-muted);">Step: ${step.step}</span>
+        <span style="color: var(--neon-green);">${step.duration_ms} ms</span>
+        <span style="color: var(--neon-cyan);">${step.tokens_used} tokens</span>
+      </div>
+    </div>
+
+    <div class="inspector-section">
+      <div class="inspector-section-title">ACTION & REASONING SUMMARY</div>
+      <div class="inspector-code-box" style="color: var(--neon-cyan);">${step.action}</div>
+    </div>
+
+    <div class="inspector-section">
+      <div class="inspector-section-title">DIAGNOSTIC DETAILS & ARTIFACTS</div>
+      <div class="inspector-code-box">${step.details || 'No detailed diagnostic logs available.'}</div>
+    </div>
+
+    <div class="inspector-section">
+      <div class="inspector-section-title">ACTIVE CONSTRAINTS & THRESHOLDS</div>
+      <div style="color: var(--text-secondary); line-height: 1.6;">
+        <div>- Complexity: <strong>${lastOrchestrationResult.complexity?.category || 'MODERATE'}</strong> (Score: ${lastOrchestrationResult.complexity?.complexity_score || 0.5})</div>
+        <div>- Exit Threshold (tau): <strong>${((lastOrchestrationResult.confidence?.threshold || 0.8) * 100).toFixed(1)}%</strong></div>
+        <div>- Total Composite Confidence: <strong>${((lastOrchestrationResult.confidence?.total_confidence || 0.8) * 100).toFixed(1)}%</strong></div>
+        <div>- Active Action: <strong style="color: var(--neon-cyan);">${lastOrchestrationResult.confidence?.action || 'STOP'}</strong> (${lastOrchestrationResult.confidence?.action_purpose || 'Return final SQL answer'})</div>
+      </div>
+    </div>
+
+    <div class="inspector-section">
+      <div class="inspector-section-title">ADAPTIVE ACTION POLICY MATRIX</div>
+      <div style="overflow-x: auto; margin-top: 6px;">
+        <table style="width: 100%; border-collapse: collapse; font-size: 11px; font-family: var(--font-mono);">
+          <thead>
+            <tr style="border-bottom: 1px solid var(--border-cyan); color: var(--neon-cyan); text-align: left;">
+              <th style="padding: 4px 8px;">Action</th>
+              <th style="padding: 4px 8px;">Trigger Condition</th>
+              <th style="padding: 4px 8px;">Priority / Conflict Resolution</th>
+              <th style="padding: 4px 8px;">Purpose</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${(lastOrchestrationResult.action_policy_table || []).map(p => {
+              const isCurrent = (lastOrchestrationResult.confidence?.action === p.action);
+              return `
+                <tr style="border-bottom: 1px solid rgba(255,255,255,0.06); ${isCurrent ? 'background: rgba(0, 242, 254, 0.12); font-weight: bold;' : ''}">
+                  <td style="padding: 6px 8px; color: ${isCurrent ? 'var(--neon-green)' : 'var(--neon-pink)'};">${isCurrent ? '▶ ' : ''}${p.action}</td>
+                  <td style="padding: 6px 8px; color: var(--text-primary);">${p.trigger_condition}</td>
+                  <td style="padding: 6px 8px; color: var(--text-secondary);">${p.priority}</td>
+                  <td style="padding: 6px 8px; color: var(--neon-cyan);">${p.purpose}</td>
+                </tr>
+              `;
+            }).join('')}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  `;
+
+  modal.style.display = 'flex';
+}
+
+function runBenchmarkComparison(queryText) {
+  const modal = document.getElementById('benchmark-modal');
+  const queryDisplay = document.getElementById('benchmark-query-display');
+  const resultsContainer = document.getElementById('benchmark-results-container');
+  if (!modal || !resultsContainer) return;
+
+  if (queryDisplay) queryDisplay.textContent = `"${queryText}"`;
+  resultsContainer.innerHTML = `
+    <div style="text-align: center; padding: 30px; color: var(--text-muted); font-family: var(--font-cyber);">
+      <span class="status-pulse-dot" style="margin-right: 8px;"></span>
+      EVALUATING 5 ORCHESTRATION MODES IN PARALLEL...
+    </div>
+  `;
+  modal.style.display = 'flex';
+
+  fetch(`${API_URL}/api/orchestrate/compare`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ english: queryText, schema: activeSchema }),
+    credentials: 'include'
+  })
+    .then(res => res.json())
+    .then(data => {
+      if (data.success && data.comparison) {
+        let html = `
+          <table class="benchmark-table">
+            <thead>
+              <tr>
+                <th>ORCHESTRATION MODE</th>
+                <th>CONFIDENCE</th>
+                <th>TOKENS</th>
+                <th>LATENCY</th>
+                <th>SAVINGS (%)</th>
+                <th>EARLY EXIT</th>
+                <th>GENERATED SQL</th>
+              </tr>
+            </thead>
+            <tbody>
+        `;
+
+        data.comparison.forEach(item => {
+          const isAdaptive = item.mode_key === 'ADAPTIVE_CONFIDENCE';
+          const rowClass = isAdaptive ? 'highlight-row' : '';
+          const earlyExitBadge = item.early_exit 
+            ? `<span style="color: var(--neon-green); font-weight: bold;">⚡ ${item.early_exit_stage}</span>` 
+            : `<span style="color: var(--text-muted);">None</span>`;
+
+          html += `
+            <tr class="${rowClass}">
+              <td>
+                <div style="font-weight: 700; color: ${isAdaptive ? 'var(--neon-cyan)' : 'var(--text-primary)'};">${item.mode_name}</div>
+                <span class="badge-mini" style="font-size: 8px;">${item.badge}</span>
+              </td>
+              <td style="color: var(--neon-green); font-weight: 700;">${item.confidence_pct}%</td>
+              <td>${item.tokens_used} tok</td>
+              <td>${item.latency_ms} ms</td>
+              <td style="color: ${item.tokens_saved_pct > 0 ? 'var(--neon-cyan)' : 'var(--text-muted)'}; font-weight: 700;">
+                ${item.tokens_saved_pct > 0 ? '+' : ''}${item.tokens_saved_pct}%
+              </td>
+              <td>${earlyExitBadge}</td>
+              <td style="font-size: 10px; color: var(--text-secondary); max-width: 240px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;" title="${item.sql}">
+                <code>${item.sql}</code>
+              </td>
+            </tr>
+          `;
+        });
+
+        html += `</tbody></table>`;
+        resultsContainer.innerHTML = html;
+      } else {
+        resultsContainer.innerHTML = `<div style="color: var(--neon-pink); padding: 20px; text-align: center;">Benchmark comparison failed: ${data.message || 'Unknown error'}</div>`;
+      }
+    })
+    .catch(err => {
+      resultsContainer.innerHTML = `<div style="color: var(--neon-pink); padding: 20px; text-align: center;">Failed to connect to benchmark API.</div>`;
+      console.error(err);
+    });
+}
+
+// High-Visibility Bright / Cyber Neon Dark Theme Controller
+function initThemeController() {
+  const btnThemeToggle = document.getElementById('btn-theme-toggle');
+  const themeIcon = document.getElementById('theme-toggle-icon');
+  const themeText = document.getElementById('theme-toggle-text');
+  
+  function applyTheme(theme) {
+    const isBright = theme === 'bright';
+    if (isBright) {
+      document.body.classList.add('theme-bright');
+      document.documentElement.classList.add('theme-bright');
+      if (themeIcon) themeIcon.textContent = '🌙';
+      if (themeText) themeText.textContent = 'Cyber Dark Mode';
+      if (btnThemeToggle) btnThemeToggle.setAttribute('title', 'Switch to Cyber Neon Dark Mode');
+    } else {
+      document.body.classList.remove('theme-bright');
+      document.documentElement.classList.remove('theme-bright');
+      if (themeIcon) themeIcon.textContent = '☀️';
+      if (themeText) themeText.textContent = 'High Visibility Mode';
+      if (btnThemeToggle) btnThemeToggle.setAttribute('title', 'Switch to High-Visibility Bright Mode');
+    }
+    localStorage.setItem('qc_theme', theme);
+  }
+
+  // Load saved preference (or default to dark with bright toggle available)
+  const savedTheme = localStorage.getItem('qc_theme') || 'dark';
+  applyTheme(savedTheme);
+
+  if (btnThemeToggle) {
+    btnThemeToggle.addEventListener('click', () => {
+      const currentTheme = document.body.classList.contains('theme-bright') ? 'bright' : 'dark';
+      const newTheme = currentTheme === 'bright' ? 'dark' : 'bright';
+      applyTheme(newTheme);
+      showNotification(
+        newTheme === 'bright' 
+          ? '☀️ High-Visibility Bright Mode Activated' 
+          : '🌙 Cyber Neon Dark Mode Activated', 
+        'info'
+      );
+      printConsoleLog(`[THEME] Switched display profile to: ${newTheme.toUpperCase()}`, 'var(--neon-cyan)');
+    });
+  }
+}
+
 // DOM Setup
 document.addEventListener('DOMContentLoaded', () => {
-  // Only execute dashboard logic if on dashboard page
-  const pathname = window.location.pathname;
-  const isDashboardPage = pathname.endsWith('dashboard.html') || pathname.includes('dashboard');
+  // Only execute dashboard logic if the dashboard markup is on this page.
+  // ("/" and "/index.html" also serve dashboard.html, so the URL alone is not a reliable test.)
+  const isDashboardPage = !!document.getElementById('schema-selector');
   if (!isDashboardPage) return;
 
+  // Initialize theme
+  initThemeController();
+
   // Initialize view
+  setupOrchestrationControls();
   loadSchemaDefinitions(true);
   checkEngineStatus();
   renderHistory();
@@ -476,6 +1305,7 @@ document.addEventListener('DOMContentLoaded', () => {
       // Update displays
       renderSchemaTree();
       renderTemplates();
+      renderQuickTableChips();
       showDefaultTablePreview();
 
       printConsoleLog(`[SYS] Switched to database schema: "${activeSchema.toUpperCase()}".`, 'var(--neon-cyan)');
@@ -489,7 +1319,49 @@ document.addEventListener('DOMContentLoaded', () => {
     });
   }
 
-  // TRANSLATE BUTTON HANDLER (Talks to Flask API)
+  // Live in-grid filter across visible rows
+  const gridFilterInput = document.getElementById('grid-filter-input');
+  if (gridFilterInput) {
+    gridFilterInput.addEventListener('input', (e) => {
+      const term = e.target.value.toLowerCase().trim();
+      if (!term) {
+        renderTableRows(currentTableColumns, currentTableData);
+        const footerRows = document.getElementById('footer-row-count');
+        if (footerRows) {
+          const valSpan = footerRows.querySelector('.val');
+          if (valSpan) valSpan.textContent = currentTableData.length;
+        }
+        return;
+      }
+      const filtered = currentTableData.filter(row => {
+        return currentTableColumns.some(col => {
+          const val = row[col];
+          return val !== null && val !== undefined && String(val).toLowerCase().includes(term);
+        });
+      });
+      renderTableRows(currentTableColumns, filtered);
+      const footerRows = document.getElementById('footer-row-count');
+      if (footerRows) {
+        const valSpan = footerRows.querySelector('.val');
+        if (valSpan) valSpan.textContent = `${filtered.length} (filtered from ${currentTableData.length})`;
+      }
+    });
+  }
+
+  // Export Table Data to CSV
+  const btnExportCsv = document.getElementById('btn-export-csv');
+  if (btnExportCsv) {
+    btnExportCsv.addEventListener('click', () => {
+      if (!currentTableData || currentTableData.length === 0) {
+        showNotification('No table data to export.', 'info');
+        return;
+      }
+      exportTableToCSV(currentTableColumns, currentTableData, `${activeSchema}_records.csv`);
+      showNotification('Table rows exported as CSV!', 'success');
+    });
+  }
+
+  // TRANSLATE BUTTON HANDLER (Executes Multi-Agent Orchestration via Flask API)
   const btnTranslate = document.getElementById('btn-translate');
   const englishInput = document.getElementById('english-input');
   const sqlTerminal = document.getElementById('sql-terminal');
@@ -502,93 +1374,97 @@ document.addEventListener('DOMContentLoaded', () => {
         return;
       }
 
-      printConsoleLog(`[NLP] Sending English statement to neural compiler...`, 'var(--text-muted)');
+      printConsoleLog(`[ORCHESTRATOR] Connecting to database tables: "${activeSchema}"...`, 'var(--neon-cyan)');
+      resetPipelineUI();
 
-      fetch(`${API_URL}/api/translate`, {
+      sqlTerminal.innerHTML = `
+        <div class="terminal-line loading">[0.00s] INITIALIZING MULTI-AGENT COMPILER...</div>
+        <div class="terminal-line loading">[0.04s] PARADIGM: ${activeOrchestrationMode}</div>
+        <div class="terminal-line loading">[0.08s] LINKING RELEVANT TABLES & COLUMNS...</div>
+      `;
+
+      fetch(`${API_URL}/api/orchestrate`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ english: englishText, schema: activeSchema }),
+        body: JSON.stringify({
+          english: englishText,
+          schema: activeSchema,
+          mode: activeOrchestrationMode,
+          constraints: { token_budget: 500, latency_budget_ms: 2500 }
+        }),
         credentials: 'include'
       })
         .then(res => res.json())
         .then(data => {
           if (data.success) {
             const sqlQuery = data.sql;
-            const engineName = data.engine || 'Rule-Based Parser';
+            const engineName = data.mode_meta ? data.mode_meta.name : 'Adaptive Multi-Agent';
             lastGeneratedSQL = sqlQuery;
+            lastOrchestrationResult = data;
 
-            // Cyberpunk matrix hacking terminal simulation
-            let timer = 0;
-            sqlTerminal.innerHTML = `<div class="terminal-line loading">[0.00s] INITIALIZING COMPILER BRIDGE...</div>`;
+            // Trigger Visual Trajectory Animations & Confidence HUD Updates
+            animatePipelineTrajectory(data);
+            updateConfidenceHUD(data);
 
-            let lines = [];
-            if (engineName !== 'Rule-Based Parser') {
-              lines = [
-                `[0.08s] ENCODING DYNAMIC SCHEMA STRUCTS [${activeSchema.toUpperCase()}]...`,
-                `[0.22s] ESTABLISHING API CONNECTIVITY TO ${engineName.toUpperCase()}...`,
-                `[0.38s] SUBMITTING COGNITIVE SYNTAX MAP TO NEURAL LAYERS...`,
-                `[0.55s] DECODING LLM TRANSLATED SQL RAW STRING...`,
-                `[0.68s] SYNTAX COMPILATION COMPLETED.`
-              ];
-            } else {
-              lines = [
-                `[0.08s] DECONSTRUCTING STATEMENT GRAMMAR (REGEX PYTHON)...`,
-                `[0.18s] ALIGNING RELATIONS IN MYSQL SCHEMA [${activeSchema.toUpperCase()}]...`,
-                `[0.32s] MAP-BUILDING JOIN CHANNELS...`,
-                `[0.45s] CONVERTING CONSTRAINTS AND WHERE ARGUMENTS...`,
-                `[0.55s] PACKING COMPILED SQL SYNTAX BLOCKS...`,
-                `[0.60s] TRANSLATION INJECTED SUCCESSFULLY.`
-              ];
+            const durationSec = ((data.metrics?.duration_ms || 350) / 1000).toFixed(2);
+            const tokensCount = data.metrics?.total_tokens || 0;
+            const exitStage = data.early_exit_stage || 'Complete';
+
+            // Auto-render query records immediately in the center output grid
+            const displayRows = (data.data && data.data.length > 0) ? data.data : (data.rows_preview && data.rows_preview.length > 0 ? data.rows_preview : null);
+            const displayCols = (data.columns && data.columns.length > 0) ? data.columns : (displayRows ? Object.keys(displayRows[0]) : []);
+
+            if (displayRows && displayCols.length > 0) {
+              renderDbPreviewTable(displayCols, displayRows);
+              printConsoleLog(`[DB] Connected to tables: retrieved ${displayRows.length} rows across ${displayCols.length} columns.`, 'var(--neon-green)');
+              const previewCard = document.getElementById('db-preview-card');
+              if (previewCard) previewCard.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+            } else if (sqlQuery) {
+              // Auto-execute live if not pre-fetched
+              fetch(`${API_URL}/api/execute`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ sql: sqlQuery, schema: activeSchema }),
+                credentials: 'include'
+              })
+                .then(r => r.json())
+                .then(r => {
+                  if (r.success && r.data && r.columns) {
+                    renderDbPreviewTable(r.columns, r.data);
+                    printConsoleLog(`[DB] Live query executed: returned ${r.rows_count} records.`, 'var(--neon-green)');
+                    const previewCard = document.getElementById('db-preview-card');
+                    if (previewCard) previewCard.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+                  }
+                })
+                .catch(e => console.error('Live execution error:', e));
             }
-
-            lines.forEach((line) => {
-              timer += 80 + Math.random() * 40;
-              setTimeout(() => {
-                sqlTerminal.innerHTML += `<div class="terminal-line loading">${line}</div>`;
-                sqlTerminal.scrollTop = sqlTerminal.scrollHeight;
-              }, timer);
-            });
 
             setTimeout(() => {
               sqlTerminal.innerHTML = `
-                <div class="terminal-line cmd">sql_engine --engine="${engineName}"</div>
+                <div class="terminal-line cmd">adaptive_orchestrator --mode="${data.mode}" --exit="${exitStage}" --tokens=${tokensCount}</div>
                 <div class="terminal-line sql-code-block">${highlightSQL(sqlQuery)}</div>
               `;
               sqlTerminal.scrollTop = 0;
-              printConsoleLog(`[NLP] Compiled SQL string generated via ${engineName}.`, 'var(--neon-green)');
-              addToHistory(englishText, sqlQuery, engineName);
 
-              // Render simulated output on the right-hand panel if available
-              if (data.simulated_output) {
-                const parsedTable = parseMarkdownTable(data.simulated_output);
-                const dbTablePreview = document.getElementById('db-table-preview');
-                const badge = document.getElementById('active-table-badge');
-                
-                if (parsedTable) {
-                  renderDbPreviewTable(parsedTable.columns, parsedTable.data);
-                  if (badge) badge.textContent = 'SIMULATION OUTPUT';
-                } else {
-                  if (dbTablePreview) {
-                     if (badge) badge.textContent = 'SIMULATION OUTPUT';
-                     dbTablePreview.innerHTML = `
-                      <div style="padding: 20px; font-family: var(--font-mono); color: var(--neon-green); font-size: 13px; text-transform: uppercase; letter-spacing: 1px;">
-                        <div style="border-bottom: 1px solid rgba(255,255,255,0.1); padding-bottom: 8px; margin-bottom: 12px; font-weight: bold; color: var(--neon-cyan);">[SYS] RUN COMPILATION SUCCESS</div>
-                        <div>${data.simulated_output.replace(/\n/g, '<br>')}</div>
-                      </div>
-                    `;
-                  }
-                }
+              printConsoleLog(`[ORCHESTRATOR] ${engineName} completed in ${durationSec}s (${tokensCount} tokens used).`, 'var(--neon-green)');
+              if (data.early_exit_taken) {
+                printConsoleLog(`[FAST-PATH] Early-exit triggered: saved ${data.metrics.tokens_saved_pct}% tokens!`, 'var(--neon-cyan)');
+              } else if (data.repaired) {
+                printConsoleLog(`[REPAIR] Self-correction repaired execution defect successfully.`, '#ffd700');
               }
-            }, timer + 100);
+            }, (data.trajectory?.length || 3) * 10 + 5);
 
           } else {
-            showNotification(data.message || 'Translation failed.', 'error');
-            printConsoleLog(`[ERROR] Translation pipeline failed: ${data.message}`, 'var(--neon-pink)');
+            // A run that ends without a valid query has no `message`; show the real reason instead of "undefined".
+            const reason = data.message || data.exec_error || (data.sql ? `generated SQL did not execute: ${data.sql}` : 'no SQL was produced');
+            if (data.trajectory) animatePipelineTrajectory(data);
+            showNotification(`Orchestration failed: ${reason}`, 'error');
+            printConsoleLog(`[ERROR] Orchestration pipeline failed: ${reason}`, 'var(--neon-pink)');
           }
         })
         .catch(err => {
-          showNotification('Translation pipeline unavailable.', 'error');
-          printConsoleLog(`[ERROR] Connection refused to translation API gateway.`, 'var(--neon-pink)');
+          showNotification('Orchestration server unavailable.', 'error');
+          printConsoleLog(`[ERROR] Connection refused to orchestration API gateway.`, 'var(--neon-pink)');
           console.error(err);
         });
     });
@@ -599,6 +1475,7 @@ document.addEventListener('DOMContentLoaded', () => {
   if (btnClearInput && englishInput) {
     btnClearInput.addEventListener('click', () => {
       englishInput.value = '';
+      englishInput.dispatchEvent(new Event('input'));
       englishInput.focus();
     });
   }
@@ -607,22 +1484,32 @@ document.addEventListener('DOMContentLoaded', () => {
   const btnClearGrid = document.getElementById('btn-clear-grid');
   if (btnClearGrid) {
     btnClearGrid.addEventListener('click', () => {
+      currentTableColumns = [];
+      currentTableData = [];
+
       const activeTableBadge = document.getElementById('active-table-badge');
       if (activeTableBadge) {
-        activeTableBadge.textContent = '';
+        activeTableBadge.innerHTML = '';
       }
+      const filterInput = document.getElementById('grid-filter-input');
+      if (filterInput) filterInput.style.display = 'none';
+      const btnExport = document.getElementById('btn-export-csv');
+      if (btnExport) btnExport.style.display = 'none';
+      const footerBar = document.getElementById('grid-footer-bar');
+      if (footerBar) footerBar.style.display = 'none';
+
       const dbTablePreview = document.getElementById('db-table-preview');
       if (dbTablePreview) {
         dbTablePreview.innerHTML = `
           <div class="simulator-empty">
-            <svg class="icon-svg" viewBox="0 0 24 24" width="32" height="32" fill="currentColor" style="opacity: 0.3;">
+            <svg class="icon-svg" viewBox="0 0 24 24" width="36" height="36" fill="currentColor" style="opacity: 0.35;">
               <path d="M12 2C6.48 2 2 4.02 2 6.5v11c0 2.48 4.48 4.5 10 4.5s10-2.02 10-4.5v-11C22 4.02 17.52 2 12 2zm0 3c4.13 0 7.5 1.25 7.5 2.5S16.13 10 12 10s-7.5-1.25-7.5-2.5S7.87 5 12 5zm0 14c-4.13 0-7.5-1.25-7.5-2.5V14c1.61 1.2 4.39 2 7.5 2s5.89-.8 7.5-2v2.5c0 1.25-3.37 2.5-7.5 2.5zm0-4.5c-4.13 0-7.5-1.25-7.5-2.5V9.5c1.61 1.2 4.39 2 7.5 2s5.89-.8 7.5-2v2.5c0 1.25-3.37 2.5-7.5 2.5z"/>
             </svg>
-            <span>RUN SQL QUERY TO GENERATE OUTPUT RECORDS</span>
+            <span>CONNECTING TO DATABASE TABLES... ROWS &amp; COLUMNS WILL BE DISPLAYED HERE</span>
           </div>
         `;
       }
-      showNotification('Grid cleared and returned to original state.', 'success');
+      showNotification('Table grid cleared.', 'success');
       printConsoleLog('[SYS] Execution table grid cleared.', 'var(--text-muted)');
     });
   }
@@ -781,4 +1668,79 @@ document.addEventListener('DOMContentLoaded', () => {
     });
   }
 
+});
+
+
+// ==========================================================================
+// OPTIONAL GEMINI API KEY (pasted by the user; kept only in this browser)
+// ==========================================================================
+const GEMINI_KEY_STORE = 'querycraft_gemini_key';
+function getUserGeminiKey() {
+  try { return localStorage.getItem(GEMINI_KEY_STORE) || ''; } catch (e) { return ''; }
+}
+function setUserGeminiKey(k) {
+  try { if (k) localStorage.setItem(GEMINI_KEY_STORE, k); else localStorage.removeItem(GEMINI_KEY_STORE); } catch (e) { /* storage blocked: key lasts only for this page */ }
+  window.__querycraftKey = k || '';
+}
+// Every call to this app's /api/ endpoints carries the user's key, if one is set.
+(function attachKeyToApiCalls() {
+  const nativeFetch = window.fetch.bind(window);
+  window.fetch = function (url, opts) {
+    const u = typeof url === 'string' ? url : (url && url.url) || '';
+    const key = window.__querycraftKey !== undefined ? window.__querycraftKey : getUserGeminiKey();
+    if (key && (u.startsWith(API_URL + '/api/') || u.startsWith('/api/'))) {
+      opts = Object.assign({}, opts || {});
+      const h = new Headers(opts.headers || {});
+      h.set('X-Gemini-Key', key);
+      opts.headers = h;
+    }
+    return nativeFetch(url, opts);
+  };
+})();
+
+function showKeyStatus(text, cls) {
+  const el = document.getElementById('api-key-status');
+  if (!el) return;
+  el.textContent = text;
+  el.classList.remove('ok', 'bad');
+  if (cls) el.classList.add(cls);
+}
+function checkGeminiKey() {
+  showKeyStatus('checking...');
+  return fetch(`${API_URL}/api/status/check-key`, { method: 'POST', credentials: 'include' })
+    .then(res => res.json())
+    .then(d => {
+      const who = d.key_source === 'browser' ? 'your key' : d.key_source === 'server' ? 'server key' : 'no key';
+      showKeyStatus(d.ok ? who + ' ✓' : who + ' ✗', d.ok ? 'ok' : 'bad');
+      if (typeof printConsoleLog === 'function') {
+        printConsoleLog('[KEY] ' + (d.ok ? 'Using ' + who + ': ' : 'Problem with ' + who + ': ') + d.message, d.ok ? 'var(--neon-cyan)' : 'var(--neon-pink)');
+      }
+      if (typeof checkEngineStatus === 'function') checkEngineStatus();
+    })
+    .catch(() => showKeyStatus('check failed', 'bad'));
+}
+document.addEventListener('DOMContentLoaded', () => {
+  const input = document.getElementById('api-key-input');
+  if (!input) return;
+  window.__querycraftKey = getUserGeminiKey();
+  const savedHint = k => 'your key is saved (••••' + k.slice(-4) + ')';
+  if (window.__querycraftKey) input.placeholder = savedHint(window.__querycraftKey);
+  const save = () => {
+    const k = input.value.trim();
+    if (!k) { input.focus(); return; }
+    if (!/^[A-Za-z0-9._\-]{20,200}$/.test(k)) { showKeyStatus('not a valid key', 'bad'); return; }
+    setUserGeminiKey(k);
+    input.value = '';
+    input.placeholder = savedHint(k);
+    checkGeminiKey();
+  };
+  document.getElementById('btn-api-key-save').addEventListener('click', save);
+  input.addEventListener('keydown', e => { if (e.key === 'Enter') save(); });
+  document.getElementById('btn-api-key-clear').addEventListener('click', () => {
+    setUserGeminiKey('');
+    input.value = '';
+    input.placeholder = 'Gemini API key (optional)';
+    checkGeminiKey();
+  });
+  checkGeminiKey();
 });

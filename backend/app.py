@@ -1,6 +1,8 @@
 import os
 import re
+import time
 import urllib.request
+import urllib.error
 import json
 import base64
 import secrets
@@ -12,6 +14,12 @@ except ImportError:
     MYSQL_AVAILABLE = False
 from flask import Flask, request, jsonify, session, render_template
 from flask_cors import CORS
+try:
+    from orchestration import MultiAgentOrchestrator
+    from orchestration.compiler import SemanticSQLCompiler
+except ImportError:
+    from backend.orchestration import MultiAgentOrchestrator
+    from backend.orchestration.compiler import SemanticSQLCompiler
 
 # Load environment variables from .env file
 def load_env():
@@ -36,24 +44,73 @@ app = Flask(
 # Enable CORS with credentials support
 CORS(app, supports_credentials=True)
 app.secret_key = 'cyberpunk_neural_key_1984'
+
+is_production = os.environ.get('RENDER') is not None or os.environ.get('FLASK_ENV') == 'production'
 app.config.update(
-    SESSION_COOKIE_SAMESITE='None',
-    SESSION_COOKIE_SECURE=True
+    SESSION_COOKIE_SAMESITE='None' if is_production else 'Lax',
+    SESSION_COOKIE_SECURE=True if is_production else False,
+    SESSION_COOKIE_HTTPONLY=True
 )
 
+_SCHEMA_CACHE = {}
+_SCHEMA_CACHE_TIMESTAMP = {}
+_CACHE_TTL = 180.0
+_MYSQL_LAST_ERROR = 0.0
+_MYSQL_ERROR_COOLDOWN = 15.0
+
 def get_mysql_connection(db_name=None):
+    global _MYSQL_LAST_ERROR
     if not MYSQL_AVAILABLE:
         raise Exception("MySQL client library (pymysql) is not available.")
         
-    return pymysql.connect(
-        host=os.environ.get('MYSQL_HOST', 'localhost'),
-        user=os.environ.get('MYSQL_USER', 'root'),
-        password=os.environ.get('MYSQL_PASSWORD', ''),
-        database=db_name,
-        port=int(os.environ.get('MYSQL_PORT', 3306)),
-        cursorclass=pymysql.cursors.DictCursor,
-        connect_timeout=6
-    )
+    # Fast-fail without stalling server threads if MySQL is in failure cooldown
+    if time.time() - _MYSQL_LAST_ERROR < _MYSQL_ERROR_COOLDOWN:
+        raise Exception("MySQL connection currently in fast-fail cooldown due to recent error.")
+
+    try:
+        return pymysql.connect(
+            host=os.environ.get('MYSQL_HOST', 'localhost'),
+            user=os.environ.get('MYSQL_USER', 'root'),
+            password=os.environ.get('MYSQL_PASSWORD', ''),
+            database=db_name,
+            port=int(os.environ.get('MYSQL_PORT', 3306)),
+            cursorclass=pymysql.cursors.DictCursor,
+            connect_timeout=2
+        )
+    except Exception as e:
+        _MYSQL_LAST_ERROR = time.time()
+        raise e
+
+def get_schema_dict(schema_name):
+    if not schema_name:
+        return {}
+
+    now = time.time()
+    if schema_name in _SCHEMA_CACHE and (now - _SCHEMA_CACHE_TIMESTAMP.get(schema_name, 0)) < _CACHE_TTL:
+        return _SCHEMA_CACHE[schema_name]
+
+    schema_dict = {}
+    if not MYSQL_AVAILABLE:
+        return schema_dict
+
+    try:
+        conn = get_mysql_connection(db_name=schema_name)
+        with conn.cursor() as cursor:
+            cursor.execute("SHOW TABLES")
+            tables = [list(row.values())[0] for row in cursor.fetchall()]
+            for table in tables:
+                cursor.execute(f"DESCRIBE `{table}`")
+                cols = cursor.fetchall()
+                schema_dict[table] = {col['Field']: col['Type'] for col in cols}
+        conn.close()
+        _SCHEMA_CACHE[schema_name] = schema_dict
+        _SCHEMA_CACHE_TIMESTAMP[schema_name] = now
+    except Exception:
+        pass
+    return schema_dict
+
+# Initialize Central Multi-Agent Adaptive Orchestrator
+orchestrator = MultiAgentOrchestrator(mysql_connector_fn=get_mysql_connection)
 
 # ==========================================
 # 1. DATABASE INITIALIZATION & SEEDING
@@ -111,12 +168,19 @@ init_databases()
 # ==========================================
 # 2. ROUTING & TEMPLATE SERVING
 # ==========================================
+@app.before_request
+def ensure_default_session():
+    if 'username' not in session:
+        session['username'] = 'Operator'
+        session['email'] = 'operator@querycraft.ai'
+
 @app.route('/')
 @app.route('/index.html')
 def index():
-    return render_template('index.html')
+    return render_template('dashboard.html')
 
 @app.route('/dashboard')
+@app.route('/dashboard/')
 @app.route('/dashboard.html')
 def dashboard():
     return render_template('dashboard.html')
@@ -199,9 +263,9 @@ def logout():
 
 @app.route('/api/auth/me', methods=['GET'])
 def get_me():
-    if 'username' in session:
-        return jsonify({'authenticated': True, 'username': session['username'], 'email': session['email']})
-    return jsonify({'authenticated': False}), 401
+    username = session.get('username', 'Operator')
+    email = session.get('email', 'operator@querycraft.ai')
+    return jsonify({'authenticated': True, 'username': username, 'email': email})
 
 @app.route('/api/auth/google', methods=['POST'])
 def google_auth():
@@ -341,7 +405,16 @@ English Request: "{english}"
 
 SQL Query:"""
 
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={api_key}"
+    candidate_models = [
+        os.environ.get('GEMINI_MODEL', 'gemini-flash-latest'),
+        "gemini-flash-latest",
+        "gemini-2.5-flash",
+    ]
+    unique_models = []
+    for m in candidate_models:
+        if m and m not in unique_models:
+            unique_models.append(m)
+
     data = {
         "contents": [{
             "parts": [{
@@ -355,37 +428,74 @@ SQL Query:"""
         },
         "generationConfig": {
             "temperature": 0.1,
-            "maxOutputTokens": 250
+            "maxOutputTokens": 400
         }
     }
-    
-    req = urllib.request.Request(
-        url,
-        data=json.dumps(data).encode('utf-8'),
-        headers={'Content-Type': 'application/json'},
-        method='POST'
-    )
-    
+
+    last_err = None
+    for model in unique_models:
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={api_key}"
+        req = urllib.request.Request(
+            url,
+            data=json.dumps(data).encode('utf-8'),
+            headers={'Content-Type': 'application/json'},
+            method='POST'
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=12) as response:
+                res_data = json.loads(response.read().decode('utf-8'))
+                text = res_data['candidates'][0]['content']['parts'][0]['text']
+                return text.strip()
+        except Exception as e:
+            last_err = e
+            continue
+
+    raise Exception(f"Gemini API Error: {str(last_err)}")
+
+def request_gemini_key():
+    """Gemini key for this request: a key pasted in the browser (X-Gemini-Key header) wins,
+    otherwise the server key from .env. The key is never logged or stored on the server."""
+    k = (request.headers.get('X-Gemini-Key') or '').strip()
+    if k and re.fullmatch(r'[A-Za-z0-9._\-]{20,200}', k):
+        return k, 'browser'
+    return os.environ.get('GEMINI_API_KEY'), 'server'
+
+
+# Check that the key in use can reach Gemini (lists models only: no tokens are spent)
+@app.route('/api/status/check-key', methods=['POST'])
+def check_gemini_key():
+    load_env()
+    key, source = request_gemini_key()
+    if not key:
+        return jsonify({'ok': False, 'key_source': 'none', 'message': 'No API key set.'})
     try:
-        with urllib.request.urlopen(req, timeout=12) as response:
-            res_data = json.loads(response.read().decode('utf-8'))
-            text = res_data['candidates'][0]['content']['parts'][0]['text']
-            return text.strip()
-    except Exception as e:
-        raise Exception(f"Gemini API Error: {str(e)}")
+        req = urllib.request.Request('https://generativelanguage.googleapis.com/v1beta/models?pageSize=1',
+                                     headers={'x-goog-api-key': key})
+        with urllib.request.urlopen(req, timeout=10) as r:
+            ok = r.status == 200
+        return jsonify({'ok': ok, 'key_source': source, 'message': 'Key works.' if ok else 'Key was rejected.'})
+    except urllib.error.HTTPError as e:
+        msg = 'Key was rejected by Google.' if e.code in (400, 401, 403) else 'Gemini returned HTTP %d.' % e.code
+        return jsonify({'ok': False, 'key_source': source, 'message': msg})
+    except Exception:
+        return jsonify({'ok': False, 'key_source': source, 'message': 'Could not reach Gemini (network).'})
+
 
 # Get current neural engine config status
 @app.route('/api/status/engine', methods=['GET'])
 def get_engine_status():
     load_env()
-    gemini_key = os.environ.get('GEMINI_API_KEY')
+    gemini_key, key_source = request_gemini_key()
     
     active_engine = "Rule-Based Parser"
     if gemini_key:
         active_engine = "Gemini AI"
         
+
+        
     return jsonify({
         'gemini_connected': bool(gemini_key),
+        'key_source': key_source if gemini_key else 'none',
         'active_engine': active_engine
     })
 
@@ -476,58 +586,192 @@ def clear_query_history():
     else:
         return jsonify({'success': False, 'message': 'Database service unavailable.'}), 503
 
-# Translation API supporting Gemini AI and Rule-Based fallback
+# ==========================================
+# 4.1 MULTI-AGENT ORCHESTRATION APIS (5 MODES)
+# ==========================================
+@app.route('/api/orchestrate/modes', methods=['GET'])
+def get_orchestration_modes():
+    return jsonify({
+        'success': True,
+        'modes': orchestrator.MODES
+    })
+
+@app.route('/api/orchestrate', methods=['POST'])
+def orchestrate_query():
+    load_env()
+    data = request.get_json() or {}
+    english = data.get('english', '').strip()
+    schema_name = data.get('schema', 'farmers_easeuse')
+    mode = data.get('mode', 'ADAPTIVE_CONFIDENCE')
+    constraints = data.get('constraints', {'token_budget': 500, 'latency_budget_ms': 2500})
+    
+    if not english:
+        return jsonify({'success': False, 'message': 'Missing English query string.'}), 400
+
+    gemini_key, key_source = request_gemini_key()
+    full_schema = get_schema_dict(schema_name)
+
+    try:
+        result = orchestrator.run(
+            english=english,
+            schema_name=schema_name,
+            full_schema=full_schema,
+            mode=mode,
+            api_key=gemini_key,
+            constraints=constraints
+        )
+
+        # Reuse records if already fetched by VerifierAgent to avoid duplicate database roundtrips
+        if result.get('rows_preview') is not None and result.get('columns'):
+            result['data'] = result['rows_preview']
+            result['rows_count'] = len(result['data'])
+        elif result.get('sql') and MYSQL_AVAILABLE:
+            try:
+                conn = get_mysql_connection(db_name=schema_name)
+                with conn.cursor() as cursor:
+                    sql_to_run = result['sql'].strip().rstrip(';')
+                    clean_stmts = [s.strip() for s in sql_to_run.split(';') if s.strip()]
+                    exec_stmt = clean_stmts[0] if clean_stmts else sql_to_run
+                    cursor.execute(exec_stmt)
+                    if cursor.description:
+                        result['columns'] = [col[0] for col in cursor.description]
+                        result['data'] = cursor.fetchall()
+                        result['rows_count'] = len(result['data'])
+                    else:
+                        conn.commit()
+                        result['affected_rows'] = cursor.rowcount
+                        result['columns'] = ['STATUS']
+                        result['data'] = [{'STATUS': f'Command executed successfully. Rows affected: {cursor.rowcount}'}]
+                        result['rows_count'] = 1
+                conn.close()
+            except Exception as ex:
+                result['exec_error'] = str(ex)
+
+        return jsonify(result)
+    except Exception as e:
+        return jsonify({'success': False, 'message': f'Orchestration error: {str(e)}'}), 500
+
+@app.route('/api/orchestrate/compare', methods=['POST'])
+def compare_orchestrations():
+    load_env()
+    data = request.get_json() or {}
+    english = data.get('english', '').strip()
+    schema_name = data.get('schema', 'farmers_easeuse')
+    
+    if not english:
+        return jsonify({'success': False, 'message': 'Missing English query string.'}), 400
+
+    gemini_key, key_source = request_gemini_key()
+    full_schema = get_schema_dict(schema_name)
+
+    try:
+        comparison_res = orchestrator.compare_all_modes(
+            english=english,
+            schema_name=schema_name,
+            full_schema=full_schema,
+            api_key=gemini_key
+        )
+        return jsonify({'success': True, **comparison_res})
+    except Exception as e:
+        return jsonify({'success': False, 'message': f'Benchmark comparison error: {str(e)}'}), 500
+
+# Translation API supporting Adaptive Multi-Agent Orchestration & fallbacks
 @app.route('/api/translate', methods=['POST'])
 def translate_query():
     load_env()
     data = request.get_json() or {}
     english = data.get('english', '').strip()
-    schema_name = data.get('schema', 'ecommerce')
+    schema_name = data.get('schema', 'farmers_easeuse')
+    mode = data.get('mode', 'ADAPTIVE_CONFIDENCE')
+    constraints = data.get('constraints', {'token_budget': 500, 'latency_budget_ms': 2500})
     
     if not english:
         return jsonify({'success': False, 'message': 'Missing english query string.'}), 400
 
-    gemini_key = os.environ.get('GEMINI_API_KEY')
+    gemini_key, key_source = request_gemini_key()
+    full_schema = get_schema_dict(schema_name)
 
-    if gemini_key:
-        try:
-            raw_text = translate_with_gemini(english, schema_name, gemini_key)
-            sql_query, simulated_output = split_sql_and_output(raw_text)
-            return jsonify({
-                'success': True, 
-                'sql': sql_query, 
-                'simulated_output': simulated_output, 
-                'engine': 'Gemini AI'
-            })
-        except Exception as e:
-            return jsonify({'success': False, 'message': f'Gemini translation error: {str(e)}'}), 500
-    else:
-        # Fallback to rule-based parser
+    try:
+        orch_res = orchestrator.run(
+            english=english,
+            schema_name=schema_name,
+            full_schema=full_schema,
+            mode=mode,
+            api_key=gemini_key,
+            constraints=constraints
+        )
+        engine_label = orch_res['mode_meta']['name']
+        if orch_res.get('early_exit_taken'):
+            engine_label += " (⚡ Fast-Path Exit)"
+
+        # Auto-execute for immediate result rendering
+        query_columns = []
+        query_data = []
+        if orch_res.get('sql') and MYSQL_AVAILABLE:
+            try:
+                conn = get_mysql_connection(db_name=schema_name)
+                with conn.cursor() as cursor:
+                    sql_to_run = orch_res['sql'].strip().rstrip(';')
+                    clean_stmts = [s.strip() for s in sql_to_run.split(';') if s.strip()]
+                    exec_stmt = clean_stmts[0] if clean_stmts else sql_to_run
+                    cursor.execute(exec_stmt)
+                    if cursor.description:
+                        query_columns = [col[0] for col in cursor.description]
+                        query_data = cursor.fetchall()
+                conn.close()
+            except Exception:
+                pass
+
+        return jsonify({
+            'success': True,
+            'sql': orch_res['sql'],
+            'simulated_output': '',
+            'columns': query_columns,
+            'data': query_data,
+            'rows_count': len(query_data),
+            'engine': engine_label,
+            'original_english': orch_res.get('original_english', english),
+            'corrected_english': orch_res.get('corrected_english', english),
+            'was_corrected': orch_res.get('was_corrected', False),
+            'corrections_made': orch_res.get('corrections_made', []),
+            'detected_intent': orch_res.get('detected_intent', 'QUERY'),
+            'action': orch_res.get('action', 'STOP'),
+            'action_policy_table': orch_res.get('action_policy_table', []),
+            'orchestration': orch_res
+        })
+    except Exception as e:
+        # Fallback to local rule-based parser if unexpected error occurs
         sql_query = translate_english_to_sql_python(english, schema_name)
         return jsonify({
-            'success': True, 
-            'sql': sql_query, 
-            'simulated_output': '', 
-            'engine': 'Rule-Based Parser'
+            'success': True,
+            'sql': sql_query,
+            'simulated_output': '',
+            'engine': 'Rule-Based Parser (Fallback)',
+            'original_english': english,
+            'corrected_english': english,
+            'was_corrected': False
         })
 
-# Execute generated SQL query on real SQLite database
+# Execute generated SQL query on real database
 @app.route('/api/execute', methods=['POST'])
 def execute_sql():
-    if 'username' not in session:
-        return jsonify({'success': False, 'message': 'Unauthorized'}), 401
-
     data = request.get_json() or {}
     sql = data.get('sql', '').strip()
-    schema_name = data.get('schema', 'ecommerce')
+    schema_name = data.get('schema', 'farmers_easeuse')
 
     if not sql:
         return jsonify({'success': False, 'message': 'No SQL statement provided.'}), 400
 
+    if not MYSQL_AVAILABLE:
+        return jsonify({'success': False, 'message': 'MySQL database client unavailable.'}), 503
+
     try:
         conn = get_mysql_connection(db_name=schema_name)
         with conn.cursor() as cursor:
-            cursor.execute(sql)
+            clean_sql = sql.strip().rstrip(';')
+            clean_stmts = [s.strip() for s in clean_sql.split(';') if s.strip()]
+            main_sql = clean_stmts[0] if clean_stmts else clean_sql
+            cursor.execute(main_sql)
             if cursor.description:
                 columns = [col[0] for col in cursor.description]
                 results = cursor.fetchall()
@@ -538,7 +782,13 @@ def execute_sql():
                 conn.commit()
                 affected = cursor.rowcount
                 conn.close()
-                return jsonify({'success': True, 'message': f'Command executed successfully. Rows affected: {affected}'})
+                return jsonify({
+                    'success': True,
+                    'message': f'Command executed successfully. Rows affected: {affected}',
+                    'columns': ['STATUS'],
+                    'data': [{'STATUS': f'Command executed successfully. Rows affected: {affected}'}],
+                    'rows_count': 1
+                })
     except Exception as e:
         return jsonify({'success': False, 'message': f'Database MySQL Compiler Error: {str(e)}'}), 500
 
@@ -644,204 +894,16 @@ def get_schemas():
 # 5. PYTHON NLP RULE-BASED TRANSLATION LOGIC
 # ==========================================
 def translate_english_to_sql_python(english, schema_name):
-    tables = []
-    schema_cols = {}
-    
-    if MYSQL_AVAILABLE:
-        try:
-            conn = get_mysql_connection(db_name=schema_name)
-            with conn.cursor() as cursor:
-                cursor.execute("SHOW TABLES")
-                tables = [list(row.values())[0] for row in cursor.fetchall()]
-                for table in tables:
-                    cursor.execute(f"DESCRIBE `{table}`")
-                    cols = cursor.fetchall()
-                    schema_cols[table] = [col['Field'] for col in cols]
-            conn.close()
-        except Exception as e:
-            print(f"Rule-based parser MySQL schema error: {e}")
+    schema_dict = get_schema_dict(schema_name)
+    if not schema_dict:
+        schema_dict = {"products": ["id", "name", "category", "price", "stock"]}
+    try:
+        refiner_res = orchestrator.refiner_agent.execute(english, schema_dict, schema_name)
+        effective_english = refiner_res.get("refined_english", english)
+    except Exception:
+        effective_english = english
+    return SemanticSQLCompiler.compile(effective_english, schema_dict, schema_name)
 
-    if not tables:
-        return "SELECT * FROM users;"
-
-    query_clean = english.lower().strip()
-    # Strip punctuation
-    query_clean = re.sub(r'[?;,]', '', query_clean)
-
-    target_tables = []
-    for table in tables:
-        # Check table names in text (singular / plural)
-        singular = table[:-1] if table.endswith('s') else table
-        if table in query_clean or f" {singular} " in f" {query_clean} " or f" {singular}s " in f" {query_clean} ":
-            if table not in target_tables:
-                target_tables.append(table)
-
-    if not target_tables:
-        target_tables.append(tables[0])
-
-    primary_table = target_tables[0]
-
-    # Detect aggregates
-    is_count = 'count' in query_clean or 'number of' in query_clean
-    is_sum = 'sum of' in query_clean or 'total ' in query_clean
-    is_avg = 'average' in query_clean or 'mean of' in query_clean or 'avg of' in query_clean
-
-    # Detect selected columns
-    columns_found = []
-    aggregate_field = ''
-    for t in target_tables:
-        if t in schema_cols:
-            for col in schema_cols[t]:
-                word_match = re.search(r'\b' + col + r'\b', query_clean)
-                if word_match:
-                    columns_found.append(f"{t}.{col}" if len(target_tables) > 1 else col)
-                    if is_sum or is_avg:
-                        aggregate_field = f"{t}.{col}" if len(target_tables) > 1 else col
-
-    select_fields = ['*']
-    if is_count:
-        select_fields = ['COUNT(*)']
-    elif is_sum and aggregate_field:
-        select_fields = [f"SUM({aggregate_field})"]
-    elif is_avg and aggregate_field:
-        select_fields = [f"AVG({aggregate_field})"]
-    elif columns_found:
-        select_fields = list(set(columns_found)) # unique columns
-
-    # Detect Join
-    join_clause = ''
-    if len(target_tables) > 1 or 'join' in query_clean or 'joined' in query_clean:
-        if len(target_tables) == 1:
-            # Look up a relation table
-            for t in tables:
-                if t != primary_table:
-                    target_tables.append(t)
-                    break
-        
-        t1 = target_tables[0]
-        t2 = target_tables[1]
-        
-        # Schema-specific join logic
-        if schema_name == 'ecommerce':
-            if (t1 == 'users' and t2 == 'orders') or (t1 == 'orders' and t2 == 'users'):
-                join_clause = f"JOIN orders ON users.id = orders.user_id" if t1 == 'users' else f"JOIN users ON orders.user_id = users.id"
-            elif (t1 == 'orders' and t2 == 'order_items') or (t1 == 'order_items' and t2 == 'orders'):
-                join_clause = f"JOIN order_items ON orders.id = order_items.order_id" if t1 == 'orders' else f"JOIN orders ON order_items.order_id = orders.id"
-            elif (t1 == 'products' and t2 == 'order_items') or (t1 == 'order_items' and t2 == 'products'):
-                join_clause = f"JOIN order_items ON products.id = order_items.product_id" if t1 == 'products' else f"JOIN products ON order_items.product_id = products.id"
-        elif schema_name == 'saas':
-            if t2 in ['page_views', 'events']:
-                join_clause = f"JOIN {t2} ON users.id = {t2}.user_id"
-            elif t1 in ['page_views', 'events']:
-                join_clause = f"JOIN users ON {t1}.user_id = users.id"
-        elif schema_name == 'social':
-            if t2 in ['posts', 'comments']:
-                join_clause = f"JOIN {t2} ON users.id = {t2}.user_id"
-            elif t1 in ['posts', 'comments']:
-                join_clause = f"JOIN users ON {t1}.user_id = users.id"
-        else:
-            # Fallback join guess
-            join_clause = f"JOIN {t2} ON {t1}.id = {t2}.user_id"
-
-    # Where filters
-    where_clauses = []
-    for t in target_tables:
-        if t in schema_cols:
-            for col in schema_cols[t]:
-                field_name = f"{t}.{col}" if len(target_tables) > 1 else col
-                
-                # Setup regex for filters
-                gt_match = re.search(r'\b' + col + r'\b\s+(?:is\s+)?(?:greater\s+than|above|>)\s+([0-9a-z_.\-:]+)', query_clean)
-                lt_match = re.search(r'\b' + col + r'\b\s+(?:is\s+)?(?:less\s+than|below|<)\s+([0-9a-z_.\-:]+)', query_clean)
-                eq_match = re.search(r'\b' + col + r'\b\s+(?:is\s+)?(?:equal\s+to|equals|=)?\s*["\']?([0-9a-zA-Z_.\-:@ ]+)["\']?', query_clean)
-                
-                if gt_match:
-                    val = gt_match.group(1)
-                    if val not in ['greater', 'less', 'and', 'limit', 'group', 'order']:
-                        where_clauses.append(f"{field_name} > {val}")
-                elif lt_match:
-                    val = lt_match.group(1)
-                    if val not in ['greater', 'less', 'and', 'limit', 'group', 'order']:
-                        where_clauses.append(f"{field_name} < {val}")
-                elif eq_match:
-                    val = eq_match.group(1).strip()
-                    # Skip matching keywords
-                    if val in ['greater', 'less', 'and', 'limit', 'group', 'order', 'equal', 'is']:
-                        continue
-                    
-                    # Capitalize for matches to databases seed values
-                    cap_vals = {'usa': 'USA', 'canada': 'Canada', 'uk': 'UK', 'germany': 'Germany', 
-                                'premium': 'Premium', 'free': 'Free', 'enterprise': 'Enterprise', 
-                                'active': 'Active', 'inactive': 'Inactive', 'completed': 'Completed', 
-                                'pending': 'Pending', 'shipped': 'Shipped', 'electronics': 'Electronics', 
-                                'apparel': 'Apparel', 'food': 'Food'}
-                    if val in cap_vals:
-                        val = cap_vals[val]
-                    
-                    # Check if column is text (needs quotes in SQL)
-                    is_numeric = False
-                    if schema_name in ['ecommerce', 'saas', 'social'] and t in schema_cols:
-                        # MySQL types. Let's quote strings
-                        is_numeric = col in ['id', 'price', 'stock', 'user_id', 'order_id', 'product_id', 'quantity', 'age', 'likes_count', 'follower_id', 'followed_id', 'duration_sec', 'salary']
-                    
-                    if is_numeric:
-                        where_clauses.append(f"{field_name} = {val}")
-                    else:
-                        where_clauses.append(f"{field_name} = '{val}'")
-
-    # GROUP BY
-    group_by = ''
-    group_match = re.search(r'(?:grouped|group)\s+by\s+([a-z_0-9]+)', query_clean)
-    if group_match:
-        group_field = group_match.group(1)
-        if len(target_tables) > 1:
-            for t in target_tables:
-                if t in schema_cols and group_field in schema_cols[t]:
-                    group_field = f"{t}.{group_field}"
-                    break
-        group_by = f"GROUP BY {group_field}"
-        # Adjust SELECT columns to contain group field
-        if select_fields[0] == '*' or select_fields[0].startswith('COUNT'):
-            if select_fields[0].startswith('COUNT'):
-                select_fields.insert(0, group_field)
-            else:
-                select_fields = [group_field, 'COUNT(*)']
-
-    # ORDER BY
-    order_by = ''
-    order_match = re.search(r'(?:ordered|sorted|order|sort)\s+by\s+([a-z_0-9]+)', query_clean)
-    if order_match:
-        order_field = order_match.group(1)
-        if len(target_tables) > 1:
-            for t in target_tables:
-                if t in schema_cols and order_field in schema_cols[t]:
-                    order_field = f"{t}.{order_field}"
-                    break
-        direction = 'DESC' if any(w in query_clean for w in ['desc', 'descending', 'highest', 'most', 'recent']) else 'ASC'
-        order_by = f"ORDER BY {order_field} {direction}"
-
-    # LIMIT
-    limit = ''
-    limit_match = re.search(r'(?:limit|top)\s+(\d+)', query_clean)
-    if limit_match:
-        limit = f"LIMIT {limit_match.group(1)}"
-    elif 'top 5' in query_clean or 'recent 5' in query_clean or 'highest 5' in query_clean:
-        limit = "LIMIT 5"
-
-    # Assemble query
-    sql = f"SELECT {', '.join(select_fields)}\nFROM {primary_table}"
-    if join_clause:
-        sql += f"\n{join_clause}"
-    if where_clauses:
-        sql += f"\nWHERE {' AND '.join(where_clauses)}"
-    if group_by:
-        sql += f"\n{group_by}"
-    if order_by:
-        sql += f"\n{order_by}"
-    if limit:
-        sql += f"\n{limit}"
-
-    return sql + ";"
 
 # Start server
 if __name__ == '__main__':
